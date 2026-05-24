@@ -1032,14 +1032,20 @@ enum Qwen35Language {
             _ inputs: MLXArray, cache: [KVCache]?
         ) -> (logits: MLXArray, hidden: MLXArray) {
             let inputs2D = inputs.ndim == 1 ? inputs.expandedDimensions(axis: 0) : inputs
-            let cacheOffset = cache?[model.faIdx].map { $0.offset } ?? 0
+            var cacheOffset = 0
+            if let cache, model.faIdx < cache.count {
+                cacheOffset = cache[model.faIdx].offset
+            }
             let batchSize = inputs2D.dim(0)
             let seqLength = inputs2D.dim(1)
             var base = MLXArray(0 ..< seqLength).asType(.int32) + Int32(cacheOffset)
-            base = broadcast(base[.newAxis, 0...], to: [batchSize, seqLength])
+            base = broadcast(base.expandedDimensions(axis: 0), to: [batchSize, seqLength])
             let positionIds = broadcast(
-                base[.newAxis, 0..., 0...], to: [3, batchSize, seqLength])
-            let cacheOpt: [KVCache?]? = cache.map { $0.map { $0 as KVCache? } }
+                base.expandedDimensions(axis: 0), to: [3, batchSize, seqLength])
+            var cacheOpt: [KVCache?]? = nil
+            if let cache {
+                cacheOpt = cache.map { $0 as KVCache? }
+            }
             let hidden = model(
                 inputs2D, inputsEmbeds: nil, cache: cacheOpt, positionIds: positionIds)
             let logits: MLXArray
