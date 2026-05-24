@@ -578,6 +578,41 @@ public class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider {
         return out
     }
 
+    /// Forward pass returning *both* logits and the last-layer hidden
+    /// states. Used by MTP speculative decoding consumers that need
+    /// the hidden state as input to the draft model.
+    /// (Odyssai-eu fork addition — V2 MTP support.)
+    public func forwardWithHidden(
+        _ inputs: MLXArray, cache: [KVCache]?
+    ) -> (logits: MLXArray, hidden: MLXArray) {
+        let hidden = model(inputs, cache: cache)
+        let logits: MLXArray
+        if let lmHead {
+            logits = lmHead(hidden)
+        } else {
+            logits = model.embedTokens.asLinear(hidden)
+        }
+        return (logits, hidden)
+    }
+
+    /// Token-id → embedding lookup using this model's embed table.
+    /// MTP drafts borrow the target's embeddings ; this is how.
+    /// (Odyssai-eu fork addition — V2 MTP support.)
+    public func embed(_ inputs: MLXArray) -> MLXArray {
+        model.embedTokens(inputs)
+    }
+
+    /// Apply the LM head to a hidden tensor (handles tied embeddings).
+    /// MTP drafts use this to score their proposals.
+    /// (Odyssai-eu fork addition — V2 MTP support.)
+    public func applyLMHead(_ hidden: MLXArray) -> MLXArray {
+        if let lmHead {
+            return lmHead(hidden)
+        } else {
+            return model.embedTokens.asLinear(hidden)
+        }
+    }
+
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
         return model.layers.map { layer in
             if layer.isLinear {
@@ -649,6 +684,26 @@ public class Qwen35Model: Module, LLMModel, KVCacheDimensionProvider {
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
         languageModel(inputs, cache: cache)
+    }
+
+    /// Forward returning both logits and the last-layer hidden states.
+    /// Surfaces the inner `Qwen35TextModel.forwardWithHidden` through
+    /// the public `Qwen35Model` wrapper.
+    /// (Odyssai-eu fork addition — V2 MTP support.)
+    public func forwardWithHidden(
+        _ inputs: MLXArray, cache: [KVCache]?
+    ) -> (logits: MLXArray, hidden: MLXArray) {
+        languageModel.forwardWithHidden(inputs, cache: cache)
+    }
+
+    /// (Odyssai-eu fork addition — V2 MTP support.)
+    public func embed(_ inputs: MLXArray) -> MLXArray {
+        languageModel.embed(inputs)
+    }
+
+    /// (Odyssai-eu fork addition — V2 MTP support.)
+    public func applyLMHead(_ hidden: MLXArray) -> MLXArray {
+        languageModel.applyLMHead(hidden)
     }
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
