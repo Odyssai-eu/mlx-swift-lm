@@ -1020,6 +1020,51 @@ enum Qwen35Language {
                 return KVCacheSimple()
             }
         }
+
+        /// Text-only forward returning (logits, hidden). Used by V2 MTP
+        /// speculative decoding which needs the last-layer hidden state
+        /// as input to the draft model. Skips the rope-deltas state
+        /// machinery (only meaningful when pixel/video tokens are in
+        /// the input) and computes simple sequential position IDs from
+        /// the cache offset.
+        /// (Odyssai-eu fork addition — V2 MTP support.)
+        func forwardWithHidden(
+            _ inputs: MLXArray, cache: [KVCache]?
+        ) -> (logits: MLXArray, hidden: MLXArray) {
+            let inputs2D = inputs.ndim == 1 ? inputs.expandedDimensions(axis: 0) : inputs
+            let cacheOffset = cache?[model.faIdx].map { $0.offset } ?? 0
+            let batchSize = inputs2D.dim(0)
+            let seqLength = inputs2D.dim(1)
+            var base = MLXArray(0 ..< seqLength).asType(.int32) + Int32(cacheOffset)
+            base = broadcast(base[.newAxis, 0...], to: [batchSize, seqLength])
+            let positionIds = broadcast(
+                base[.newAxis, 0..., 0...], to: [3, batchSize, seqLength])
+            let cacheOpt: [KVCache?]? = cache.map { $0.map { $0 as KVCache? } }
+            let hidden = model(
+                inputs2D, inputsEmbeds: nil, cache: cacheOpt, positionIds: positionIds)
+            let logits: MLXArray
+            if let lmHead {
+                logits = lmHead(hidden)
+            } else {
+                logits = model.embedTokens.asLinear(hidden)
+            }
+            return (logits, hidden)
+        }
+
+        /// (Odyssai-eu fork addition — V2 MTP support.)
+        func embed(_ inputs: MLXArray) -> MLXArray {
+            let inputs2D = inputs.ndim == 1 ? inputs.expandedDimensions(axis: 0) : inputs
+            return model.embedTokens(inputs2D)
+        }
+
+        /// (Odyssai-eu fork addition — V2 MTP support.)
+        func applyLMHead(_ hidden: MLXArray) -> MLXArray {
+            if let lmHead {
+                return lmHead(hidden)
+            } else {
+                return model.embedTokens.asLinear(hidden)
+            }
+        }
     }
 }
 
@@ -1046,6 +1091,29 @@ public class Qwen35: Module, VLMModel {
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
         languageModel.makeCache(maxKVSize: parameters?.maxKVSize)
+    }
+
+    /// Text-only forward returning (logits, hidden). Used by V2 MTP
+    /// speculative decoding ; surfaces the inner language model
+    /// forward without going through the vision/state machinery.
+    /// (Odyssai-eu fork addition — V2 MTP support.)
+    public func forwardWithHidden(
+        _ inputs: MLXArray, cache: [KVCache]?
+    ) -> (logits: MLXArray, hidden: MLXArray) {
+        languageModel.forwardWithHidden(inputs, cache: cache)
+    }
+
+    /// Token-id → embedding lookup using the inner LM's embed table.
+    /// MTP drafts borrow this from the target.
+    /// (Odyssai-eu fork addition — V2 MTP support.)
+    public func embed(_ inputs: MLXArray) -> MLXArray {
+        languageModel.embed(inputs)
+    }
+
+    /// Project hidden state → vocab logits (handles tied embeddings).
+    /// (Odyssai-eu fork addition — V2 MTP support.)
+    public func applyLMHead(_ hidden: MLXArray) -> MLXArray {
+        languageModel.applyLMHead(hidden)
     }
 
     private func mergeInputIdsWithImageFeatures(
