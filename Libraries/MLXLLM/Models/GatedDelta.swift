@@ -302,3 +302,116 @@ func gatedDeltaUpdate(
 
     return gatedDeltaOps(q: q, k: k, v: v, g: g, beta: beta, state: state, mask: mask)
 }
+
+// MARK: - Verify-decode variant with per-step intermediate state capture
+
+// Fork addition (Odyssai-eu) — used by MTP speculative decoding for cache
+// rollback support over linear-attention layers. Returns the per-step SSM
+// state stack so that on rejection the verifier can restore the SSM state
+// at the accepted-index without replaying the verify forward.
+//
+// The intermediates path uses the ops loop (not the Metal kernel) because
+// the kernel only writes the final state. Verify blocks are small (T ≈ 5-7)
+// so the kernel-vs-ops gap is amortized against the rollback win on
+// rejection.
+func gatedDeltaUpdateWithIntermediates(
+    q: MLXArray,
+    k: MLXArray,
+    v: MLXArray,
+    a: MLXArray,
+    b: MLXArray,
+    aLog: MLXArray,
+    dtBias: MLXArray,
+    state: MLXArray? = nil,
+    mask: MLXArray? = nil
+) -> (y: MLXArray, finalState: MLXArray, intermediateStates: MLXArray) {
+    let beta = sigmoid(b)
+    let g = computeGatedDeltaG(aLog, a, dtBias)
+
+    let B = q.dim(0)
+    let T = q.dim(1)
+    let Hk = q.dim(2)
+    let Dk = q.dim(3)
+    let Hv = v.dim(2)
+    let Dv = v.dim(3)
+
+    var qExpanded = q
+    var kExpanded = k
+
+    let repeatFactor = Hv / Hk
+    if repeatFactor > 1 {
+        qExpanded = repeated(q, count: repeatFactor, axis: -2)
+        kExpanded = repeated(k, count: repeatFactor, axis: -2)
+    }
+
+    var st = state ?? MLXArray.zeros([B, Hv, Dv, Dk], dtype: .float32)
+    if st.dtype != .float32 {
+        st = st.asType(.float32)
+    }
+
+    var ys = [MLXArray]()
+    ys.reserveCapacity(T)
+    var states = [MLXArray]()
+    states.reserveCapacity(T)
+
+    for t in 0 ..< T {
+        let qT = qExpanded[0..., t]
+        let kT = kExpanded[0..., t]
+        let vT = v[0..., t]
+        let gT = g[0..., t]
+        let betaT = beta[0..., t]
+        let maskT = mask == nil ? nil : mask![0..., t]
+
+        let (y, newState) = gatedDeltaStepWithState(
+            q: qT, k: kT, v: vT, g: gT, beta: betaT, state: st, mask: maskT)
+        ys.append(y)
+        st = newState
+        states.append(newState)
+    }
+
+    let y = MLX.stacked(ys, axis: 1)
+    let intermediates = MLX.stacked(states, axis: 1)  // [B, T, Hv, Dv, Dk]
+    return (y, st, intermediates)
+}
+
+private func gatedDeltaStepWithState(
+    q: MLXArray,
+    k: MLXArray,
+    v: MLXArray,
+    g: MLXArray,
+    beta: MLXArray,
+    state: MLXArray,
+    mask: MLXArray? = nil
+) -> (MLXArray, MLXArray) {
+    let oldState = state
+    let decay: MLXArray
+    if g.ndim == 2 {
+        decay = expandedDimensions(g, axes: [2, 3])
+    } else if g.ndim == 3 {
+        decay = expandedDimensions(g, axis: -2)
+    } else {
+        fatalError("Unsupported gating shape \(g.shape)")
+    }
+
+    var newState = state * decay
+    let kvMem = (newState * expandedDimensions(k, axis: -2)).sum(axis: -1)
+    let delta = (v - kvMem) * expandedDimensions(beta, axis: -1)
+    newState = newState + expandedDimensions(k, axis: -2) * expandedDimensions(delta, axis: -1)
+    let y = (newState * expandedDimensions(q, axis: -2)).sum(axis: -1)
+
+    if let mask {
+        let expandedMask: MLXArray
+        if mask.ndim == 1 {
+            expandedMask = expandedDimensions(mask, axes: [1, 2, 3])
+        } else if mask.ndim == 2 {
+            expandedMask = expandedDimensions(mask, axes: [2, 3])
+        } else if mask.ndim == 3 {
+            expandedMask = expandedDimensions(mask, axis: -1)
+        } else {
+            fatalError("Unsupported mask shape \(mask.shape)")
+        }
+        newState = MLX.where(expandedMask, newState, oldState)
+    }
+
+    return (y, newState)
+}

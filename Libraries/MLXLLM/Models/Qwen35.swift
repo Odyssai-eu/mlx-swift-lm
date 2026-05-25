@@ -292,6 +292,106 @@ final class Qwen35GatedDeltaNet: Module {
         out = norm(out, gate: z)
         return outProj(out.reshaped(B, S, -1))
     }
+
+    // Verify-decode entry — captures the per-step SSM state + conv_input so
+    // that the speculative iterator can roll back the linear-attn cache on
+    // rejection. Mirrors `callAsFunction` semantics ; the only behavioural
+    // delta is the ops-loop SSM update + the sink append.
+    // (Odyssai-eu fork addition — V2 MTP support.)
+    func callAsFunctionCapturing(
+        _ inputs: MLXArray,
+        mask: MLXArray? = nil,
+        cache: MambaCache? = nil,
+        gdnSink: inout [Qwen35GdnRollbackEntry?],
+        layerIdx: Int
+    ) -> MLXArray {
+        let B = inputs.dim(0)
+        let S = inputs.dim(1)
+
+        var qkv = inProjQKV(inputs)
+        let z = inProjZ(inputs).reshaped(B, S, numVHeads, headVDim)
+        let b = inProjB(inputs)
+        let a = inProjA(inputs)
+
+        let convState: MLXArray
+        if let cacheState = cache?[0] {
+            convState = cacheState
+        } else {
+            convState = MLXArray.zeros([B, convKernelSize - 1, convDim], dtype: inputs.dtype)
+        }
+
+        if let mask {
+            qkv = MLX.where(mask[.ellipsis, .newAxis], qkv, 0)
+        }
+
+        let convInput = concatenated([convState, qkv], axis: 1)
+        if let cache {
+            cache[0] = convInput[0..., (-(convKernelSize - 1))...]
+        }
+
+        let convOut = silu(conv1d(convInput))
+
+        let convSplit = MLX.split(convOut, indices: [keyDim, 2 * keyDim], axis: -1)
+        let q = convSplit[0].reshaped(B, S, numKHeads, headKDim)
+        let k = convSplit[1].reshaped(B, S, numKHeads, headKDim)
+        let v = convSplit[2].reshaped(B, S, numVHeads, headVDim)
+
+        let initialState = cache?[1]
+        let dtype = q.dtype
+        let invScale = pow(Float(headKDim), -0.5)
+        let qNormed =
+            MLXArray(pow(invScale, 2)).asType(dtype)
+            * MLXFast.rmsNorm(q, weight: MLXArray.mlxNone, eps: 1e-6)
+        let kNormed =
+            MLXArray(invScale).asType(dtype)
+            * MLXFast.rmsNorm(k, weight: MLXArray.mlxNone, eps: 1e-6)
+
+        let (out0, finalState, intermediates) = gatedDeltaUpdateWithIntermediates(
+            q: qNormed,
+            k: kNormed,
+            v: v,
+            a: a,
+            b: b,
+            aLog: aLog,
+            dtBias: dtBias,
+            state: initialState,
+            mask: mask
+        )
+
+        if let cache {
+            cache[1] = finalState
+        }
+
+        gdnSink[layerIdx] = Qwen35GdnRollbackEntry(
+            initialState: initialState,
+            convInput: convInput,
+            kernelSize: convKernelSize,
+            intermediateStates: intermediates
+        )
+
+        let out = norm(out0, gate: z)
+        return outProj(out.reshaped(B, S, -1))
+    }
+}
+
+// MARK: - Speculative rollback support (Odyssai-eu fork — V2 MTP)
+
+/// Captured per-layer state from a verify forward, sufficient to restore
+/// the linear-attn (SSM) cache on rejection of N proposed tokens. Mirrors
+/// Blaizzy's `gdn_sink` tuple in mlx_vlm but typed.
+public struct Qwen35GdnRollbackEntry {
+    public let initialState: MLXArray?
+    public let convInput: MLXArray
+    public let kernelSize: Int
+    public let intermediateStates: MLXArray  // [B, T, Hv, Dv, Dk]
+}
+
+/// Buffer returned by `targetVerify` and consumed by `rollbackSpeculativeCache`.
+public struct Qwen35SpeculativeRollbackBuffer {
+    /// Per decoder-layer entries ; `nil` for full-attention layers.
+    public let entries: [Qwen35GdnRollbackEntry?]
+    /// Number of tokens in the verify block (incl. bonus).
+    public let blockSize: Int
 }
 
 // MARK: - Attention
@@ -491,6 +591,36 @@ final class Qwen35DecoderLayer: Module {
         let h = x + r
         return h + (mlp as! UnaryLayer)(postAttentionLayerNorm(h))
     }
+
+    // Verify-decode entry routing to `Qwen35GatedDeltaNet.callAsFunctionCapturing`
+    // on linear layers. Full-attention layers fall back to the standard
+    // forward — their rollback is a `KVCache.trim(N)` and needs no per-step
+    // capture.
+    // (Odyssai-eu fork addition — V2 MTP support.)
+    func callAsFunctionCapturing(
+        _ x: MLXArray,
+        attentionMask: MLXFast.ScaledDotProductAttentionMaskMode,
+        ssmMask: MLXArray?,
+        cache: KVCache?,
+        gdnSink: inout [Qwen35GdnRollbackEntry?],
+        layerIdx: Int
+    ) -> MLXArray {
+        let r: MLXArray
+        if isLinear {
+            r = linearAttn!.callAsFunctionCapturing(
+                inputLayerNorm(x),
+                mask: ssmMask,
+                cache: cache as? MambaCache,
+                gdnSink: &gdnSink,
+                layerIdx: layerIdx
+            )
+        } else {
+            r = selfAttn!(inputLayerNorm(x), mask: attentionMask, cache: cache)
+        }
+
+        let h = x + r
+        return h + (mlp as! UnaryLayer)(postAttentionLayerNorm(h))
+    }
 }
 
 // MARK: - Text Model
@@ -542,6 +672,42 @@ public class Qwen35TextModelInner: Module {
                 ? MLXFast.ScaledDotProductAttentionMaskMode.none : faMask
             hiddenStates = layer(
                 hiddenStates, attentionMask: attnMask, ssmMask: mask, cache: cacheArray?[i])
+        }
+
+        return norm(hiddenStates)
+    }
+
+    // Verify-decode forward — same layer wiring but routes linear-attn
+    // layers through the capturing entry to populate `gdnSink`.
+    // (Odyssai-eu fork addition — V2 MTP support.)
+    func callAsFunctionCapturing(
+        _ inputs: MLXArray,
+        cache: [KVCache?]? = nil,
+        gdnSink: inout [Qwen35GdnRollbackEntry?]
+    ) -> MLXArray {
+        var hiddenStates = embedTokens(inputs)
+
+        var cacheArray = cache
+        if cacheArray == nil {
+            cacheArray = Array(repeating: nil as KVCache?, count: layers.count)
+        }
+
+        let faMask = createAttentionMask(h: hiddenStates, cache: cacheArray?[faIdx])
+        let ssmMask = createSSMMask(h: hiddenStates, cache: cacheArray?[ssmIdx] as? MambaCache)
+
+        for (i, layer) in layers.enumerated() {
+            let mask = layer.isLinear ? ssmMask : nil
+            let attnMask =
+                layer.isLinear
+                ? MLXFast.ScaledDotProductAttentionMaskMode.none : faMask
+            hiddenStates = layer.callAsFunctionCapturing(
+                hiddenStates,
+                attentionMask: attnMask,
+                ssmMask: mask,
+                cache: cacheArray?[i],
+                gdnSink: &gdnSink,
+                layerIdx: i
+            )
         }
 
         return norm(hiddenStates)
@@ -610,6 +776,81 @@ public class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider {
             return lmHead(hidden)
         } else {
             return model.embedTokens.asLinear(hidden)
+        }
+    }
+
+    /// Verify-decode forward — runs the full block, returns logits +
+    /// hidden states + a buffer capturing per-linear-attn-layer state so
+    /// that `rollbackSpeculativeCache` can undo the cache updates on
+    /// rejected positions without a snapshot/replay.
+    ///
+    /// Block size is `inputs.dim(1)` ; the buffer's `blockSize` matches.
+    /// (Odyssai-eu fork addition — V2 MTP support.)
+    public func targetVerify(
+        _ inputs: MLXArray, cache: [KVCache]?
+    ) -> (logits: MLXArray, hidden: MLXArray, rollback: Qwen35SpeculativeRollbackBuffer) {
+        let blockSize = inputs.dim(1)
+        var sink: [Qwen35GdnRollbackEntry?] = Array(
+            repeating: nil, count: model.layers.count)
+        let optionalCache: [KVCache?]? = cache?.map { $0 as KVCache? }
+        let hidden = model.callAsFunctionCapturing(
+            inputs, cache: optionalCache, gdnSink: &sink)
+        let logits: MLXArray
+        if let lmHead {
+            logits = lmHead(hidden)
+        } else {
+            logits = model.embedTokens.asLinear(hidden)
+        }
+        let buffer = Qwen35SpeculativeRollbackBuffer(
+            entries: sink, blockSize: blockSize)
+        return (logits, hidden, buffer)
+    }
+
+    /// Roll back the model's KV + SSM caches by `blockSize - acceptedCount`
+    /// rejected tokens. `acceptedCount` is the number of tokens kept from
+    /// the verify block (0..blockSize inclusive). `acceptedCount == 0`
+    /// rolls everything back to the pre-verify state ;
+    /// `acceptedCount == blockSize` is a no-op.
+    ///
+    /// Full-attention layers are trimmed via `KVCache.trim`. Linear-attn
+    /// layers are restored from the captured per-step SSM state +
+    /// `conv_input` slice, matching Blaizzy's `rollback_speculative_cache`
+    /// in mlx_vlm.
+    /// (Odyssai-eu fork addition — V2 MTP support.)
+    public func rollbackSpeculativeCache(
+        cache: [KVCache],
+        rollbackBuffer: Qwen35SpeculativeRollbackBuffer,
+        acceptedCount: Int
+    ) {
+        let blockSize = rollbackBuffer.blockSize
+        precondition(
+            acceptedCount >= 0 && acceptedCount <= blockSize,
+            "acceptedCount \(acceptedCount) out of range [0, \(blockSize)]")
+        if acceptedCount == blockSize { return }
+        let trim = blockSize - acceptedCount
+        let a0 = acceptedCount - 1  // -1 when nothing accepted
+        let entries = rollbackBuffer.entries
+        precondition(
+            entries.count == cache.count,
+            "rollback buffer entry count (\(entries.count)) != cache count (\(cache.count))")
+
+        for (i, c) in cache.enumerated() {
+            if let entry = entries[i] {
+                guard let mamba = c as? MambaCache else {
+                    fatalError(
+                        "Layer \(i) captured a GDN rollback entry but the cache is not MambaCache")
+                }
+                let K = entry.kernelSize
+                if a0 >= 0 {
+                    mamba[1] = entry.intermediateStates[0..., a0]
+                    mamba[0] = entry.convInput[0..., (a0 + 1) ..< (a0 + K)]
+                } else {
+                    mamba[1] = entry.initialState
+                    mamba[0] = entry.convInput[0..., 0 ..< (K - 1)]
+                }
+            } else if c.isTrimmable {
+                c.trim(trim)
+            }
         }
     }
 
@@ -704,6 +945,23 @@ public class Qwen35Model: Module, LLMModel, KVCacheDimensionProvider {
     /// (Odyssai-eu fork addition — V2 MTP support.)
     public func applyLMHead(_ hidden: MLXArray) -> MLXArray {
         languageModel.applyLMHead(hidden)
+    }
+
+    /// (Odyssai-eu fork addition — V2 MTP support.)
+    public func targetVerify(
+        _ inputs: MLXArray, cache: [KVCache]?
+    ) -> (logits: MLXArray, hidden: MLXArray, rollback: Qwen35SpeculativeRollbackBuffer) {
+        languageModel.targetVerify(inputs, cache: cache)
+    }
+
+    /// (Odyssai-eu fork addition — V2 MTP support.)
+    public func rollbackSpeculativeCache(
+        cache: [KVCache],
+        rollbackBuffer: Qwen35SpeculativeRollbackBuffer,
+        acceptedCount: Int
+    ) {
+        languageModel.rollbackSpeculativeCache(
+            cache: cache, rollbackBuffer: rollbackBuffer, acceptedCount: acceptedCount)
     }
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
