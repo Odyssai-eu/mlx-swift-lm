@@ -72,35 +72,41 @@ public class Gemma4Model: Module, LLMModel, KVCacheDimensionProvider {
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var sanitized = [String: MLXArray]()
         for (key, value) in weights {
-            var k = key
-
-            // Strip "model." prefix
-            let startsWithModel = k.hasPrefix("model.")
-            k = k.replacingOccurrences(of: "model.", with: "", options: .anchored)
-
-            // Skip vision/audio weights
-            if k.hasPrefix("vision_tower") || k.hasPrefix("multi_modal_projector")
-                || k.hasPrefix("audio_tower") || k.hasPrefix("embed_audio")
-                || k.hasPrefix("embed_vision")
-            {
-                continue
-            }
-
-            if !startsWithModel {
+            if let k = Self.sanitizeWeightKey(key) {
                 sanitized[k] = value
-                continue
             }
-
-            // Remap language_model keys
-            if k.hasPrefix("language_model") {
-                k = k.replacingOccurrences(
-                    of: "language_model.", with: "language_model.model.", options: .anchored)
-            }
-
-            sanitized[k] = value
         }
 
         return languageModel.sanitize(weights: sanitized)
+    }
+
+    static func sanitizeWeightKey(_ key: String) -> String? {
+        var k = key
+
+        // Strip optional checkpoint wrappers. VLM checkpoints commonly
+        // store text weights as `language_model.*`, while some HF ports
+        // prepend `model.language_model.*`.
+        let startsWithModel = k.hasPrefix("model.")
+        k = k.replacingOccurrences(of: "model.", with: "", options: .anchored)
+
+        // Skip vision/audio weights.
+        if k.hasPrefix("vision_tower") || k.hasPrefix("multi_modal_projector")
+            || k.hasPrefix("audio_tower") || k.hasPrefix("embed_audio")
+            || k.hasPrefix("embed_vision")
+        {
+            return nil
+        }
+
+        if k.hasPrefix("language_model.") {
+            return k.replacingOccurrences(
+                of: "language_model.", with: "", options: .anchored)
+        }
+
+        if !startsWithModel {
+            return k
+        }
+
+        return k
     }
 
     public func newCache(parameters: GenerateParameters?) -> [any KVCache] {

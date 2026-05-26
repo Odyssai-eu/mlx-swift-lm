@@ -95,4 +95,15 @@ struct Gemma4AssistantTests {
 
         #expect(mapping == [58, 58, 58, 59])
     }
+
+    @Test("Gemma4 LLM strips VLM language_model checkpoint prefix")
+    func testGemma4LLMSanitizesVLMTextWeights() throws {
+        #expect(
+            Gemma4Model.sanitizeWeightKey("language_model.model.embed_tokens.weight")
+                == "model.embed_tokens.weight")
+        #expect(
+            Gemma4Model.sanitizeWeightKey("model.language_model.model.embed_tokens.weight")
+                == "model.embed_tokens.weight")
+        #expect(Gemma4Model.sanitizeWeightKey("embed_vision.embedding_projection.weight") == nil)
+    }
 }
