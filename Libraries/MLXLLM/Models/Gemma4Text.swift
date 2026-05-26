@@ -557,8 +557,8 @@ private class Gemma4TextModelInner: Module {
         _ inputs: MLXArray,
         cache: [KVCache]? = nil
     ) -> MLXArray {
-        let inputEmbeddings = embedTokens(inputs)
-        var h = inputEmbeddings * embedScale
+        let tokenEmbeddings = self.inputEmbeddings(inputs)
+        var h = tokenEmbeddings * embedScale
 
         // Compute per-layer inputs (PLE)
         var perLayerInputs: [MLXArray?]
@@ -643,6 +643,10 @@ private class Gemma4TextModelInner: Module {
 
         return norm(h)
     }
+
+    func inputEmbeddings(_ inputs: MLXArray) -> MLXArray {
+        embedTokens(inputs)
+    }
 }
 
 // MARK: - Public Model
@@ -650,6 +654,8 @@ private class Gemma4TextModelInner: Module {
 public class Gemma4TextModel: Module, LLMModel, KVCacheDimensionProvider {
     public let vocabularySize: Int
     public let kvHeads: [Int]
+    public var layerTypes: [String] { config.layerTypes }
+    public var numKVSharedLayers: Int { config.numKvSharedLayers }
 
     fileprivate let config: Gemma4TextConfiguration
     fileprivate let model: Gemma4TextModelInner
@@ -676,6 +682,14 @@ public class Gemma4TextModel: Module, LLMModel, KVCacheDimensionProvider {
         }
         out = tanh(out / config.finalLogitSoftcapping) * config.finalLogitSoftcapping
         return out
+    }
+
+    public func hiddenStates(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
+        model(inputs, cache: cache)
+    }
+
+    public func inputEmbeddings(_ inputs: MLXArray) -> MLXArray {
+        model.inputEmbeddings(inputs) * Float(config.hiddenSize).squareRoot()
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {

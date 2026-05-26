@@ -48,6 +48,8 @@ public struct Gemma4Configuration: Codable, Sendable {
 public class Gemma4Model: Module, LLMModel, KVCacheDimensionProvider {
     public var vocabularySize: Int { languageModel.vocabularySize }
     public var kvHeads: [Int] { languageModel.kvHeads }
+    public var layerTypes: [String] { languageModel.layerTypes }
+    public var numKVSharedLayers: Int { languageModel.numKVSharedLayers }
 
     @ModuleInfo(key: "language_model") fileprivate var languageModel: Gemma4TextModel
 
@@ -57,6 +59,14 @@ public class Gemma4Model: Module, LLMModel, KVCacheDimensionProvider {
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
         languageModel(inputs, cache: cache)
+    }
+
+    public func hiddenStates(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
+        languageModel.hiddenStates(inputs, cache: cache)
+    }
+
+    public func inputEmbeddings(_ inputs: MLXArray) -> MLXArray {
+        languageModel.inputEmbeddings(inputs)
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
