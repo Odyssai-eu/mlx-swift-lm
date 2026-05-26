@@ -100,10 +100,10 @@ struct Gemma4AssistantTests {
     func testGemma4LLMSanitizesVLMTextWeights() throws {
         #expect(
             Gemma4Model.sanitizeWeightKey("language_model.model.embed_tokens.weight")
-                == "model.embed_tokens.weight")
+                == "language_model.model.embed_tokens.weight")
         #expect(
             Gemma4Model.sanitizeWeightKey("model.language_model.model.embed_tokens.weight")
-                == "model.embed_tokens.weight")
+                == "language_model.model.embed_tokens.weight")
         #expect(Gemma4Model.sanitizeWeightKey("embed_vision.embedding_projection.weight") == nil)
     }
 }

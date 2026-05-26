@@ -98,8 +98,7 @@ public class Gemma4Model: Module, LLMModel, KVCacheDimensionProvider {
         }
 
         if k.hasPrefix("language_model.") {
-            return k.replacingOccurrences(
-                of: "language_model.", with: "", options: .anchored)
+            return k
         }
 
         if !startsWithModel {
