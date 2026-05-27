@@ -674,7 +674,23 @@ public class Gemma4TextModel: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        var out = model(inputs, cache: cache)
+        applyLMHead(model(inputs, cache: cache))
+    }
+
+    /// Forward pass returning both logits and the last-layer hidden states.
+    /// Used by Gemma4 sidecar MTP decoding, which needs target hidden states
+    /// as assistant feedback without running the target model twice.
+    public func forwardWithHidden(
+        _ inputs: MLXArray, cache: [KVCache]?
+    ) -> (logits: MLXArray, hidden: MLXArray) {
+        let hidden = model(inputs, cache: cache)
+        return (applyLMHead(hidden), hidden)
+    }
+
+    /// Apply the LM head to hidden states, preserving tied embeddings and
+    /// Gemma's final logits softcap.
+    public func applyLMHead(_ hidden: MLXArray) -> MLXArray {
+        var out = hidden
         if let lmHead {
             out = lmHead(out)
         } else {

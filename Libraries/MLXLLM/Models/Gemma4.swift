@@ -65,6 +65,16 @@ public class Gemma4Model: Module, LLMModel, KVCacheDimensionProvider {
         languageModel.hiddenStates(inputs, cache: cache)
     }
 
+    public func forwardWithHidden(
+        _ inputs: MLXArray, cache: [KVCache]?
+    ) -> (logits: MLXArray, hidden: MLXArray) {
+        languageModel.forwardWithHidden(inputs, cache: cache)
+    }
+
+    public func applyLMHead(_ hidden: MLXArray) -> MLXArray {
+        languageModel.applyLMHead(hidden)
+    }
+
     public func inputEmbeddings(_ inputs: MLXArray) -> MLXArray {
         languageModel.inputEmbeddings(inputs)
     }
