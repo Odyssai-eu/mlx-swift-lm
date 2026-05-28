@@ -27,12 +27,6 @@ public func scatterUnsort(x: MLXArray, invOrder: MLXArray, shape: [Int]? = nil) 
 
 // MARK: - SwitchGLU
 
-private let compiledSiluGLU: @Sendable (MLXArray, MLXArray) -> MLXArray = compile(
-    shapeless: true
-) { gate, up in
-    MLXNN.silu(gate) * up
-}
-
 public class SwitchGLU: Module {
     @ModuleInfo(key: "gate_proj") var gateProj: SwitchLinear
     @ModuleInfo(key: "up_proj") var upProj: SwitchLinear
@@ -42,7 +36,6 @@ public class SwitchGLU: Module {
     let hiddenDims: Int
     let numExperts: Int
     let activation: ((MLXArray) -> MLXArray)?
-    let fusedActivation: (@Sendable (MLXArray, MLXArray) -> MLXArray)?
 
     public init(
         inputDims: Int,
@@ -54,7 +47,6 @@ public class SwitchGLU: Module {
         self.hiddenDims = hiddenDims
         self.numExperts = numExperts
         self.activation = nil
-        self.fusedActivation = compiledSiluGLU
 
         self._gateProj.wrappedValue = SwitchLinear(
             inputDims: inputDims, outputDims: hiddenDims, numExperts: numExperts, bias: bias)
@@ -77,7 +69,6 @@ public class SwitchGLU: Module {
         self.hiddenDims = hiddenDims
         self.numExperts = numExperts
         self.activation = activation
-        self.fusedActivation = nil
 
         self._gateProj.wrappedValue = SwitchLinear(
             inputDims: inputDims, outputDims: hiddenDims, numExperts: numExperts, bias: bias)
@@ -103,10 +94,10 @@ public class SwitchGLU: Module {
 
         let xUp = upProj(x, idx, sortedIndices: doSort)
         let xGate = gateProj(x, idx, sortedIndices: doSort)
-        let hidden = if let fusedActivation {
-            fusedActivation(xGate, xUp)
+        let hidden = if let activation {
+            activation(xGate) * xUp
         } else {
-            activation!(xGate) * xUp
+            xGate * MLX.sigmoid(xGate) * xUp
         }
         x = downProj(
             hidden,
