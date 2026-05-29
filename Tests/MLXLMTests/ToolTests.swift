@@ -738,6 +738,10 @@ struct ToolTests {
         #expect(ToolCallFormat.infer(from: "qwen3_next_moe") == .xmlFunction)
         #expect(ToolCallFormat.infer(from: "QWEN3_NEXT") == .xmlFunction)
 
+        // MiniMax M2 models (prefix matching)
+        #expect(ToolCallFormat.infer(from: "minimax_m2") == .minimaxM2)
+        #expect(ToolCallFormat.infer(from: "MiniMax_M2") == .minimaxM2)
+
         // Mistral3 models (prefix matching)
         #expect(ToolCallFormat.infer(from: "mistral3") == .mistral)
         #expect(ToolCallFormat.infer(from: "Mistral3") == .mistral)

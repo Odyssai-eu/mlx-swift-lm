@@ -204,6 +204,11 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
             return .xmlFunction
         }
 
+        // MiniMax M2 family
+        if type.hasPrefix("minimax_m2") {
+            return .minimaxM2
+        }
+
         // Mistral3 family (mistral3, mistral3_text, etc.)
         if type.hasPrefix("mistral3") {
             return .mistral
