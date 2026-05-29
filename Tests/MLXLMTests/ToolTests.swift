@@ -614,6 +614,29 @@ struct ToolTests {
         #expect(toolCall.function.arguments["query"] == .string("AI news"))
     }
 
+    @Test("Test MiniMax M2 Processor After Thinking Text")
+    func testMiniMaxM2ProcessorAfterThinkingText() throws {
+        let processor = ToolCallProcessor(format: .minimaxM2)
+        let content = """
+            I should search first.
+            </think>
+
+            <minimax:tool_call>
+            <invoke name="tavily_search">
+            <parameter name="query">president francais actuel</parameter>
+            </invoke>
+            </minimax:tool_call>
+            """
+
+        let emitted = processor.processChunk(content)
+
+        #expect(emitted?.contains("I should search first.") == true)
+        #expect(processor.toolCalls.count == 1)
+        let toolCall = try #require(processor.toolCalls.first)
+        #expect(toolCall.function.name == "tavily_search")
+        #expect(toolCall.function.arguments["query"] == .string("president francais actuel"))
+    }
+
     // MARK: - Llama 3 Format Tests
 
     @Test("Test Llama 3 Tool Call Parser")

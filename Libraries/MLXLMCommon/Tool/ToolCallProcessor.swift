@@ -182,22 +182,35 @@ public class ToolCallProcessor {
         }
 
         toolCallBuffer += chunk
-        var leadingToken: String?
-
         switch state {
         case .normal:
-            // Change state to potential tool call
-            state = .potentialToolCall
+            if let startRange = toolCallBuffer.range(of: startTag) {
+                let leadingToken = String(toolCallBuffer[..<startRange.lowerBound])
+                toolCallBuffer = String(toolCallBuffer[startRange.lowerBound...])
+                state = .collectingToolCall
+                return finishTaggedCollection(leadingToken: leadingToken)
+            }
 
-            leadingToken = separateToken(
-                from: &toolCallBuffer, separator: String(startChar), returnLeading: true)
+            if let candidateStart = toolCallBuffer.lastIndex(of: startChar) {
+                let leading = String(toolCallBuffer[..<candidateStart])
+                let candidate = String(toolCallBuffer[candidateStart...])
+                if partialMatch(buffer: candidate, tag: startTag) {
+                    toolCallBuffer = candidate
+                    state = .potentialToolCall
+                    return leading.isEmpty ? nil : leading
+                }
+            }
 
-            fallthrough
+            state = .normal
+            let buffer = toolCallBuffer
+            toolCallBuffer = ""
+            return buffer
+
         case .potentialToolCall:
             if partialMatch(buffer: toolCallBuffer, tag: startTag) {
                 if toolCallBuffer.starts(with: startTag) {
                     state = .collectingToolCall
-                    fallthrough
+                    return finishTaggedCollection(leadingToken: nil)
                 } else {
                     return nil
                 }
@@ -206,43 +219,49 @@ public class ToolCallProcessor {
                 state = .normal
                 let buffer = toolCallBuffer
                 toolCallBuffer = ""
-                return (leadingToken ?? "") + buffer
+                return buffer
             }
         case .collectingToolCall:
-            guard let endTag = parser.endTag else {
-                return nil
-            }
+            return finishTaggedCollection(leadingToken: nil)
+        }
+    }
 
-            if toolCallBuffer.contains(endTag) {
-                let completeToken = toolCallBuffer
-                // Separate the trailing token
-                let trailingToken = separateToken(
-                    from: &toolCallBuffer, separator: endTag, returnLeading: false)
+    private func finishTaggedCollection(leadingToken: String?) -> String? {
+        guard let endTag = parser.endTag else {
+            return nil
+        }
 
-                // Parse the tool call using the parser
-                if let toolCall = parser.parse(content: toolCallBuffer, tools: tools) {
-                    toolCalls.append(toolCall)
-                } else {
-                    state = .normal
-                    toolCallBuffer = ""
-                    return completeToken
-                }
+        if toolCallBuffer.contains(endTag) {
+            let completeToken = toolCallBuffer
+            // Separate the trailing token
+            let trailingToken = separateToken(
+                from: &toolCallBuffer, separator: endTag, returnLeading: false)
 
+            // Parse the tool call using the parser
+            if let toolCall = parser.parse(content: toolCallBuffer, tools: tools) {
+                toolCalls.append(toolCall)
+            } else {
                 state = .normal
                 toolCallBuffer = ""
-
-                // If the token contains the start character, there may be more tool calls to come
-                if let trailingToken, let startChar = startTagFirstChar,
-                    trailingToken.contains(startChar)
-                {
-                    return processChunk(trailingToken)
-                } else {
-                    // Otherwise, return the collected token, or nil if it's empty
-                    return trailingToken?.isEmpty ?? true ? nil : trailingToken
-                }
-            } else {
-                return nil
+                return (leadingToken ?? "") + completeToken
             }
+
+            state = .normal
+            toolCallBuffer = ""
+
+            let emittedLeading = leadingToken ?? ""
+            // If the token contains the start character, there may be more tool calls to come
+            if let trailingToken, let startChar = startTagFirstChar,
+                trailingToken.contains(startChar)
+            {
+                return emittedLeading + (processChunk(trailingToken) ?? "")
+            } else {
+                let emittedTrailing = trailingToken ?? ""
+                let emitted = emittedLeading + emittedTrailing
+                return emitted.isEmpty ? nil : emitted
+            }
+        } else {
+            return leadingToken?.isEmpty ?? true ? nil : leadingToken
         }
     }
 
