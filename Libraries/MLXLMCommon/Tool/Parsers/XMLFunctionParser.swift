@@ -14,6 +14,13 @@ public struct XMLFunctionParser: ToolCallParser, Sendable {
     }
 
     public func parse(content: String, tools: [[String: any Sendable]]?) -> ToolCall? {
+        if content.contains("{"),
+           let fallback = JSONToolCallParser(startTag: startTag ?? "", endTag: endTag ?? "")
+            .parse(content: content, tools: tools)
+        {
+            return fallback
+        }
+
         // Pattern: <function=(content)</function> — [\s\S] matches newlines
         guard
             let funcMatch = content.range(

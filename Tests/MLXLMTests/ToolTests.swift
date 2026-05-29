@@ -138,6 +138,30 @@ struct ToolTests {
         #expect(toolCall.function.arguments.isEmpty)
     }
 
+    @Test("Test JSON Tool Call Parser - OpenAI Function Envelope")
+    func testJSONParserOpenAIFunctionEnvelope() throws {
+        let parser = JSONToolCallParser(startTag: "<tool_call>", endTag: "</tool_call>")
+        let content =
+            #"<tool_call>{"type":"function","function":{"name":"tavily_search","arguments":{"query":"president francais actuel"}}}</tool_call>"#
+
+        let toolCall = try #require(parser.parse(content: content, tools: nil))
+
+        #expect(toolCall.function.name == "tavily_search")
+        #expect(toolCall.function.arguments["query"] == .string("president francais actuel"))
+    }
+
+    @Test("Test JSON Tool Call Parser - Parameters Alias")
+    func testJSONParserParametersAlias() throws {
+        let parser = JSONToolCallParser(startTag: "<tool_call>", endTag: "</tool_call>")
+        let content =
+            #"<tool_call>{"name":"tavily_search","parameters":{"query":"swift mlx"}}</tool_call>"#
+
+        let toolCall = try #require(parser.parse(content: content, tools: nil))
+
+        #expect(toolCall.function.name == "tavily_search")
+        #expect(toolCall.function.arguments["query"] == .string("swift mlx"))
+    }
+
     @Test("Test JSON Tool Call Parser - Stringified Array Arguments")
     func testJSONParserStringifiedArrayArguments() throws {
         let parser = JSONToolCallParser(startTag: "<tool_call>", endTag: "</tool_call>")
@@ -420,6 +444,31 @@ struct ToolTests {
         let toolCall = try #require(processor.toolCalls.first)
         #expect(toolCall.function.name == "get_weather")
         #expect(toolCall.function.arguments["location"] == .string("Tokyo"))
+    }
+
+    @Test("Test Qwen3 Next JSON Tool Call via XML Processor")
+    func testQwen3NextJSONToolCallViaXMLProcessor() throws {
+        let processor = ToolCallProcessor(format: .xmlFunction)
+        let content =
+            #"<tool_call>{"name":"tavily_search","arguments":{"query":"Qui est le president francais actuel ?"}}</tool_call>"#
+
+        _ = processor.processChunk(content)
+
+        #expect(processor.toolCalls.count == 1)
+        let toolCall = try #require(processor.toolCalls.first)
+        #expect(toolCall.function.name == "tavily_search")
+        #expect(toolCall.function.arguments["query"] == .string("Qui est le president francais actuel ?"))
+    }
+
+    @Test("Test Tagged Tool Processor Does Not Drop Unparsed Content")
+    func testTaggedToolProcessorDoesNotDropUnparsedContent() throws {
+        let processor = ToolCallProcessor(format: .xmlFunction)
+        let content = "<tool_call>not json and not xml</tool_call>"
+
+        let result = processor.processChunk(content)
+
+        #expect(result == content)
+        #expect(processor.toolCalls.isEmpty)
     }
 
     @Test("Test Qwen3.5 Format - No Arguments")

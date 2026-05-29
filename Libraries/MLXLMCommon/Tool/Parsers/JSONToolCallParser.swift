@@ -39,9 +39,37 @@ public struct JSONToolCallParser: ToolCallParser, Sendable {
     }
 
     private func normalizedToolCallData(from data: Data) -> Data? {
-        guard var jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
+        guard let root = try? JSONSerialization.jsonObject(with: data) else {
             return nil
+        }
+
+        var jsonObject: [String: Any]
+        if let object = root as? [String: Any] {
+            jsonObject = object
+        } else if let array = root as? [[String: Any]], let first = array.first {
+            jsonObject = first
+        } else {
+            return nil
+        }
+
+        if let toolCalls = jsonObject["tool_calls"] as? [[String: Any]],
+           let first = toolCalls.first
+        {
+            jsonObject = first
+        }
+
+        if let function = jsonObject["function"] as? [String: Any] {
+            jsonObject = function
+        }
+
+        if jsonObject["arguments"] == nil,
+           let parameters = jsonObject["parameters"]
+        {
+            jsonObject["arguments"] = parameters
+        }
+
+        if jsonObject["arguments"] == nil {
+            jsonObject["arguments"] = [:]
         }
 
         if let stringifiedArguments = jsonObject["arguments"] as? String {

@@ -214,6 +214,7 @@ public class ToolCallProcessor {
             }
 
             if toolCallBuffer.contains(endTag) {
+                let completeToken = toolCallBuffer
                 // Separate the trailing token
                 let trailingToken = separateToken(
                     from: &toolCallBuffer, separator: endTag, returnLeading: false)
@@ -221,6 +222,10 @@ public class ToolCallProcessor {
                 // Parse the tool call using the parser
                 if let toolCall = parser.parse(content: toolCallBuffer, tools: tools) {
                     toolCalls.append(toolCall)
+                } else {
+                    state = .normal
+                    toolCallBuffer = ""
+                    return completeToken
                 }
 
                 state = .normal
