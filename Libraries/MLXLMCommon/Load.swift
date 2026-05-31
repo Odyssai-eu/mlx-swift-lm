@@ -55,5 +55,26 @@ public func loadWeights(
     let parameters = ModuleParameters.unflattened(weights)
     try model.update(parameters: parameters, verify: [.all])
 
-    eval(model)
+    evalModelWeights(model)
+}
+
+private func evalModelWeights(_ model: BaseLanguageModel) {
+    let maxBatchBytes = 512 * 1024 * 1024
+    var batch: [MLXArray] = []
+    var batchBytes = 0
+
+    for array in model.innerState() {
+        let bytes = array.nbytes
+        if !batch.isEmpty && batchBytes + bytes > maxBatchBytes {
+            eval(batch)
+            batch.removeAll(keepingCapacity: true)
+            batchBytes = 0
+        }
+        batch.append(array)
+        batchBytes += bytes
+    }
+
+    if !batch.isEmpty {
+        eval(batch)
+    }
 }
