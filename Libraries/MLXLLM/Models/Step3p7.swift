@@ -181,11 +181,22 @@ class Step3p7MoEBlock: Module, UnaryLayer {
 
     init(_ config: Step3p7TextConfiguration, moeLimit: Float?, sharedLimit: Float?) {
         _gate.wrappedValue = Step3p7MoEGate(config)
-        _switchMLP.wrappedValue = SwitchGLU(
-            inputDims: config.hiddenSize,
-            hiddenDims: config.moeIntermediateSize,
-            numExperts: config.moeNumExperts
-        )
+        if let moeLimit {
+            _switchMLP.wrappedValue = SwitchGLU(
+                inputDims: config.hiddenSize,
+                hiddenDims: config.moeIntermediateSize,
+                numExperts: config.moeNumExperts,
+                gatedActivation: { up, gate in
+                    boundedSwiGLU(gate: gate, up: up, limit: moeLimit)
+                }
+            )
+        } else {
+            _switchMLP.wrappedValue = SwitchGLU(
+                inputDims: config.hiddenSize,
+                hiddenDims: config.moeIntermediateSize,
+                numExperts: config.moeNumExperts
+            )
+        }
         _sharedExpert.wrappedValue = Step3p7MLP(
             hiddenSize: config.hiddenSize,
             intermediateSize: config.sharedExpertDim,

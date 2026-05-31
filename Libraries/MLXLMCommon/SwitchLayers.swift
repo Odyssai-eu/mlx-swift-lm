@@ -35,7 +35,7 @@ public class SwitchGLU: Module {
     let inputDims: Int
     let hiddenDims: Int
     let numExperts: Int
-    let activation: ((MLXArray) -> MLXArray)?
+    let activation: (MLXArray, MLXArray) -> MLXArray
 
     public init(
         inputDims: Int,
@@ -46,7 +46,9 @@ public class SwitchGLU: Module {
         self.inputDims = inputDims
         self.hiddenDims = hiddenDims
         self.numExperts = numExperts
-        self.activation = nil
+        self.activation = { up, gate in
+            gate * MLX.sigmoid(gate) * up
+        }
 
         self._gateProj.wrappedValue = SwitchLinear(
             inputDims: inputDims, outputDims: hiddenDims, numExperts: numExperts, bias: bias)
@@ -68,7 +70,31 @@ public class SwitchGLU: Module {
         self.inputDims = inputDims
         self.hiddenDims = hiddenDims
         self.numExperts = numExperts
-        self.activation = activation
+        self.activation = { up, gate in
+            activation(gate) * up
+        }
+
+        self._gateProj.wrappedValue = SwitchLinear(
+            inputDims: inputDims, outputDims: hiddenDims, numExperts: numExperts, bias: bias)
+        self._upProj.wrappedValue = SwitchLinear(
+            inputDims: inputDims, outputDims: hiddenDims, numExperts: numExperts, bias: bias)
+        self._downProj.wrappedValue = SwitchLinear(
+            inputDims: hiddenDims, outputDims: inputDims, numExperts: numExperts, bias: bias)
+
+        super.init()
+    }
+
+    public init(
+        inputDims: Int,
+        hiddenDims: Int,
+        numExperts: Int,
+        gatedActivation: @escaping (MLXArray, MLXArray) -> MLXArray,
+        bias: Bool = false
+    ) {
+        self.inputDims = inputDims
+        self.hiddenDims = hiddenDims
+        self.numExperts = numExperts
+        self.activation = gatedActivation
 
         self._gateProj.wrappedValue = SwitchLinear(
             inputDims: inputDims, outputDims: hiddenDims, numExperts: numExperts, bias: bias)
@@ -94,11 +120,7 @@ public class SwitchGLU: Module {
 
         let xUp = upProj(x, idx, sortedIndices: doSort)
         let xGate = gateProj(x, idx, sortedIndices: doSort)
-        let hidden = if let activation {
-            activation(xGate) * xUp
-        } else {
-            xGate * MLX.sigmoid(xGate) * xUp
-        }
+        let hidden = activation(xUp, xGate)
         x = downProj(
             hidden,
             idx,
