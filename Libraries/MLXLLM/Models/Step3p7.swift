@@ -318,6 +318,23 @@ public class Step3p7Model: Module, LLMModel, KVCacheDimensionProvider {
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var weights = weights
 
+        if weights.keys.contains(where: { $0.hasPrefix("language_model.") }) {
+            weights = Dictionary(uniqueKeysWithValues: weights.map { key, value in
+                if key.hasPrefix("language_model.") {
+                    return (String(key.dropFirst("language_model.".count)), value)
+                }
+                return (key, value)
+            })
+        }
+        if weights.keys.contains(where: { $0.hasPrefix("model.language_model.") }) {
+            weights = Dictionary(uniqueKeysWithValues: weights.map { key, value in
+                if key.hasPrefix("model.language_model.") {
+                    return (String(key.dropFirst("model.language_model.".count)), value)
+                }
+                return (key, value)
+            })
+        }
+
         let unflattened = ModuleParameters.unflattened(weights)
         if let languageModel = unflattened["language_model"] {
             weights = Dictionary(uniqueKeysWithValues: languageModel.flattened())
