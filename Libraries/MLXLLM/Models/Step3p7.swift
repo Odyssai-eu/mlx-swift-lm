@@ -368,6 +368,10 @@ public class Step3p7Model: Module, LLMModel, KVCacheDimensionProvider {
         return weights
     }
 
+    public func sanitize(weights: [String: MLXArray], metadata: [String: String]) -> [String: MLXArray] {
+        sanitize(weights: weights)
+    }
+
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
         model.layers.map { layer in
             if layer.isSlidingWindow, let slidingWindow = configuration.slidingWindow {
