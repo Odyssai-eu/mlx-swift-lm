@@ -14,9 +14,9 @@ private func boundedSwiGLU(gate: MLXArray, up: MLXArray, limit: Float?) -> MLXAr
     guard let limit else {
         return silu(gate) * up
     }
-    let clippedGate = clip(gate, max: MLXArray(limit))
+    let clippedGate = clip(silu(gate), max: MLXArray(limit))
     let clippedUp = clip(up, min: MLXArray(-limit), max: MLXArray(limit))
-    return silu(clippedGate) * clippedUp
+    return clippedGate * clippedUp
 }
 
 class Step3p7Attention: Module {
@@ -146,6 +146,7 @@ class Step3p7MLP: Module, UnaryLayer {
 class Step3p7MoEGate: Module {
     let topK: Int
     let routedScalingFactor: Float
+    let normTopKProb: Bool
 
     @ModuleInfo(key: "gate") var gate: Linear
     @ParameterInfo(key: "router_bias") var routerBias: MLXArray
@@ -153,6 +154,7 @@ class Step3p7MoEGate: Module {
     init(_ config: Step3p7TextConfiguration) {
         self.topK = config.moeTopK
         self.routedScalingFactor = config.moeRouterScalingFactor
+        self.normTopKProb = config.normExpertWeight
         _gate.wrappedValue = Linear(config.hiddenSize, config.moeNumExperts, bias: false)
         _routerBias.wrappedValue = MLXArray.zeros([config.moeNumExperts], dtype: .float32)
         super.init()
@@ -164,7 +166,9 @@ class Step3p7MoEGate: Module {
         let k = topK
         let inds = argPartition(-selectionScores, kth: k - 1, axis: -1)[.ellipsis, ..<k]
         var scores = takeAlong(gateProb, inds, axis: -1)
-        scores = scores / (scores.sum(axis: -1, keepDims: true) + 1e-20)
+        if normTopKProb {
+            scores = scores / (scores.sum(axis: -1, keepDims: true) + 1e-20)
+        }
         scores = scores * routedScalingFactor
         return (inds, scores)
     }
@@ -345,27 +349,48 @@ public class Step3p7Model: Module, LLMModel, KVCacheDimensionProvider {
                 && !$0.key.hasPrefix("model.layers.\(configuration.hiddenLayers).")
                 && !$0.key.hasPrefix("model.layers.\(configuration.hiddenLayers + 1).")
                 && !$0.key.hasPrefix("model.layers.\(configuration.hiddenLayers + 2).")
+                && !$0.key.contains(".mtp.")
         }
 
         if configuration.tieWordEmbeddings {
             weights["lm_head.weight"] = nil
         }
 
-        let normSuffixes = [
-            ".input_layernorm.weight",
-            ".post_attention_layernorm.weight",
-            ".q_norm.weight",
-            ".k_norm.weight",
-            "model.norm.weight",
+        let remappings = [
+            (".moe.gate_proj.", ".mlp.switch_mlp.gate_proj."),
+            (".moe.up_proj.", ".mlp.switch_mlp.up_proj."),
+            (".moe.down_proj.", ".mlp.switch_mlp.down_proj."),
+            (".moe.gate.", ".mlp.gate.gate."),
+            (".moe.router_bias", ".mlp.gate.router_bias"),
+            (".share_expert.", ".mlp.share_expert."),
         ]
-        for key in Array(weights.keys) {
-            guard let value = weights[key] else { continue }
-            if normSuffixes.contains(where: { key.hasSuffix($0) }), value.ndim == 1 {
-                weights[key] = value + MLXArray(1, dtype: value.dtype)
+
+        let isVanilla = weights.keys.contains { key in
+            remappings.contains { src, dst in
+                key.contains(src) && !key.contains(dst)
             }
         }
 
-        return weights
+        var newWeights: [String: MLXArray] = [:]
+        newWeights.reserveCapacity(weights.count)
+        for (originalKey, originalValue) in weights {
+            var key = originalKey
+            var value = originalValue
+
+            for (src, dst) in remappings {
+                if key.contains(src), !key.contains(dst) {
+                    key = key.replacingOccurrences(of: src, with: dst)
+                    break
+                }
+            }
+
+            if isVanilla, key.hasSuffix(".weight"), key.contains("norm"), value.ndim == 1 {
+                value = value + MLXArray(1, dtype: value.dtype)
+            }
+            newWeights[key] = value
+        }
+
+        return newWeights
     }
 
     public func sanitize(weights: [String: MLXArray], metadata: [String: String]) -> [String: MLXArray] {
@@ -418,6 +443,7 @@ public struct Step3p7TextConfiguration: Codable, Sendable {
     var useMOERouterBias: Bool = true
     var moeRouterActivation: String = "sigmoid"
     var moeRouterScalingFactor: Float = 1.0
+    var normExpertWeight: Bool = true
     var needFP32Gate: Bool = true
     var attentionOtherSetting: Step3p7AttentionOtherSetting?
     var swigluLimits: [Float?] = []
@@ -451,6 +477,7 @@ public struct Step3p7TextConfiguration: Codable, Sendable {
         case useMOERouterBias = "use_moe_router_bias"
         case moeRouterActivation = "moe_router_activation"
         case moeRouterScalingFactor = "moe_router_scaling_factor"
+        case normExpertWeight = "norm_expert_weight"
         case needFP32Gate = "need_fp32_gate"
         case attentionOtherSetting = "attention_other_setting"
         case swigluLimits = "swiglu_limits"
@@ -512,6 +539,7 @@ public struct Step3p7TextConfiguration: Codable, Sendable {
             try container.decodeIfPresent(String.self, forKey: .moeRouterActivation) ?? "sigmoid"
         moeRouterScalingFactor =
             try container.decodeIfPresent(Float.self, forKey: .moeRouterScalingFactor) ?? 1.0
+        normExpertWeight = try container.decodeIfPresent(Bool.self, forKey: .normExpertWeight) ?? true
         needFP32Gate = try container.decodeIfPresent(Bool.self, forKey: .needFP32Gate) ?? true
         attentionOtherSetting =
             try container.decodeIfPresent(Step3p7AttentionOtherSetting.self, forKey: .attentionOtherSetting)
@@ -561,6 +589,7 @@ public struct Step3p7TextConfiguration: Codable, Sendable {
         try container.encode(useMOERouterBias, forKey: .useMOERouterBias)
         try container.encode(moeRouterActivation, forKey: .moeRouterActivation)
         try container.encode(moeRouterScalingFactor, forKey: .moeRouterScalingFactor)
+        try container.encode(normExpertWeight, forKey: .normExpertWeight)
         try container.encode(needFP32Gate, forKey: .needFP32Gate)
         try container.encodeIfPresent(attentionOtherSetting, forKey: .attentionOtherSetting)
         try container.encode(swigluLimits, forKey: .swigluLimits)
