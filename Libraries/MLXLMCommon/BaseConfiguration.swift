@@ -87,7 +87,12 @@ public struct BaseConfiguration: Codable, Sendable {
         /// - Parameter layer: The path/name of the layer.
         /// - Returns: The `Quantization` settings to apply, or `nil` if the layer should be skipped.
         public func quantization(layer: String) -> Quantization? {
-            if let perLayer = perLayerQuantization[layer] {
+            let wrappedLayer = "language_model.\(layer)"
+            let modelWrappedLayer = "model.language_model.\(layer)"
+            if let perLayer = perLayerQuantization[layer]
+                ?? perLayerQuantization[wrappedLayer]
+                ?? perLayerQuantization[modelWrappedLayer]
+            {
                 switch perLayer {
                 case .skip:
                     return nil
