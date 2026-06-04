@@ -346,7 +346,9 @@ final class Qwen35GatedDeltaNet: Module {
             MLXArray(invScale).asType(dtype)
             * MLXFast.rmsNorm(k, weight: MLXArray.mlxNone, eps: 1e-6)
 
-        let (out0, finalState, intermediates) = gatedDeltaUpdateWithIntermediates(
+        // Tier-1: use the non-capturing recurrence. We no longer materialize
+        // the per-step intermediate states; rollback replays them on demand.
+        let (out0, finalState) = gatedDeltaUpdate(
             q: qNormed,
             k: kNormed,
             v: v,
@@ -366,7 +368,14 @@ final class Qwen35GatedDeltaNet: Module {
             initialState: initialState,
             convInput: convInput,
             kernelSize: convKernelSize,
-            intermediateStates: intermediates
+            qNormed: qNormed,
+            kNormed: kNormed,
+            v: v,
+            a: a,
+            b: b,
+            aLog: aLog,
+            dtBias: dtBias,
+            mask: mask
         )
 
         let out = norm(out0, gate: z)
@@ -383,7 +392,19 @@ public struct Qwen35GdnRollbackEntry {
     public let initialState: MLXArray?
     public let convInput: MLXArray
     public let kernelSize: Int
-    public let intermediateStates: MLXArray  // [B, T, Hv, Dv, Dk]
+    // Tier-1 compact capture: store the (small) recurrence inputs instead of
+    // the full per-step SSM state `[B, T, Hv, Dv, Dk]`. On rejection,
+    // `rollbackSpeculativeCache` replays `gatedDeltaUpdate` over the accepted
+    // prefix to reconstruct the exact same state — only paid when we reject,
+    // versus materializing ~150 MB/round of intermediates on every verify.
+    public let qNormed: MLXArray
+    public let kNormed: MLXArray
+    public let v: MLXArray
+    public let a: MLXArray
+    public let b: MLXArray
+    public let aLog: MLXArray
+    public let dtBias: MLXArray
+    public let mask: MLXArray?
 }
 
 /// Buffer returned by `targetVerify` and consumed by `rollbackSpeculativeCache`.
@@ -842,7 +863,24 @@ public class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider {
                 }
                 let K = entry.kernelSize
                 if a0 >= 0 {
-                    mamba[1] = entry.intermediateStates[0..., a0]
+                    // Replay the gated-delta recurrence over the first
+                    // `acceptedCount` (= a0 + 1) steps from the captured initial
+                    // state. This reconstructs exactly the state the old code
+                    // indexed out of `intermediateStates[a0]`, but without ever
+                    // materializing the full per-step state tensor.
+                    let n = a0 + 1
+                    let (_, replayed) = gatedDeltaUpdate(
+                        q: entry.qNormed[0..., 0 ..< n],
+                        k: entry.kNormed[0..., 0 ..< n],
+                        v: entry.v[0..., 0 ..< n],
+                        a: entry.a[0..., 0 ..< n],
+                        b: entry.b[0..., 0 ..< n],
+                        aLog: entry.aLog,
+                        dtBias: entry.dtBias,
+                        state: entry.initialState,
+                        mask: entry.mask.map { $0[0..., 0 ..< n] }
+                    )
+                    mamba[1] = replayed
                     mamba[0] = entry.convInput[0..., (a0 + 1) ..< (a0 + K)]
                 } else {
                     mamba[1] = entry.initialState
