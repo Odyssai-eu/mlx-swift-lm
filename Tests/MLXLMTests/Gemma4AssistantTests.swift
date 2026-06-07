@@ -106,4 +106,61 @@ struct Gemma4AssistantTests {
                 == "language_model.model.embed_tokens.weight")
         #expect(Gemma4Model.sanitizeWeightKey("embed_vision.embedding_projection.weight") == nil)
     }
+
+    @Test("Gemma4 MoE config decodes router and expert fields")
+    func testGemma4MoEConfigurationDecoding() throws {
+        let config = try JSONDecoder.json5().decode(
+            Gemma4Configuration.self,
+            from: Data(
+                """
+                {
+                  "model_type": "gemma4",
+                  "vocab_size": 262144,
+                  "text_config": {
+                    "model_type": "gemma4_text",
+                    "hidden_size": 2816,
+                    "num_hidden_layers": 30,
+                    "intermediate_size": 2112,
+                    "moe_intermediate_size": 704,
+                    "num_attention_heads": 16,
+                    "head_dim": 256,
+                    "global_head_dim": 512,
+                    "num_key_value_heads": 8,
+                    "num_global_key_value_heads": 2,
+                    "num_kv_shared_layers": 0,
+                    "hidden_size_per_layer_input": 0,
+                    "enable_moe_block": true,
+                    "num_experts": 128,
+                    "top_k_experts": 8,
+                    "use_double_wide_mlp": false,
+                    "layer_types": ["sliding_attention"]
+                  }
+                }
+                """.utf8))
+
+        #expect(config.textConfig.enableMoeBlock)
+        #expect(config.textConfig.numExperts == 128)
+        #expect(config.textConfig.topKExperts == 8)
+        #expect(config.textConfig.moeIntermediateSize == 704)
+    }
+
+    @Test("Gemma4 LLM keeps MoE layer checkpoint keys")
+    func testGemma4LLMKeepsMoELayerKeys() throws {
+        let keys = [
+            "language_model.model.layers.0.experts.switch_glu.gate_proj.weight",
+            "language_model.model.layers.0.experts.switch_glu.up_proj.weight",
+            "language_model.model.layers.0.experts.switch_glu.down_proj.weight",
+            "language_model.model.layers.0.router.proj.weight",
+            "language_model.model.layers.0.router.scale",
+            "language_model.model.layers.0.router.per_expert_scale",
+            "language_model.model.layers.0.post_feedforward_layernorm_1.weight",
+            "language_model.model.layers.0.pre_feedforward_layernorm_2.weight",
+            "language_model.model.layers.0.post_feedforward_layernorm_2.weight",
+        ]
+
+        for key in keys {
+            #expect(Gemma4Model.sanitizeWeightKey(key) == key)
+            #expect(Gemma4Model.sanitizeWeightKey("model.\(key)") == key)
+        }
+    }
 }
