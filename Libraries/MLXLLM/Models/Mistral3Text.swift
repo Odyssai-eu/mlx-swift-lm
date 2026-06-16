@@ -307,6 +307,39 @@ public class Mistral3TextModel: Module, LLMModel, KVCacheDimensionProvider {
         }
     }
 
+    // MARK: - EAGLE speculative ABI (Odyssai-eu fork addition)
+    //
+    // Mirrors the Qwen3.5/3.6 MTP ABI so the Mistral EAGLE draft can borrow the
+    // target's hidden states, embedding table, and LM head. No `targetVerify` /
+    // `rollbackSpeculativeCache` here: Mistral 3.5 is full-attention
+    // (KVCacheSimple, trimmable), so the EAGLE iterator rolls back rejected
+    // positions with `trimPromptCache` instead of a Qwen-style SSM capture buffer.
+
+    /// Forward returning both logits and the post-norm hidden state — the EAGLE
+    /// draft conditions on the target hidden at each position.
+    public func forwardWithHidden(
+        _ inputs: MLXArray, cache: [KVCache]?
+    ) -> (logits: MLXArray, hidden: MLXArray) {
+        let hidden = model(inputs, cache: cache, inputEmbeddings: nil)
+        return (applyLMHead(hidden), hidden)
+    }
+
+    /// Token-id → embedding lookup using the target's embed table. The EAGLE
+    /// draft has no embeddings of its own — it borrows the target's.
+    public func embed(_ inputs: MLXArray) -> MLXArray {
+        model.embedTokens(inputs)
+    }
+
+    /// Apply the target's LM head to a hidden tensor (handles tied embeddings).
+    /// The EAGLE draft scores its proposals with the target's head.
+    public func applyLMHead(_ hidden: MLXArray) -> MLXArray {
+        if let lmHead {
+            return lmHead(hidden)
+        } else {
+            return model.embedTokens.asLinear(hidden)
+        }
+    }
+
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var processedWeights = weights
 
