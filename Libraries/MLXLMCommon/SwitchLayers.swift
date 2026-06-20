@@ -109,7 +109,11 @@ public class SwitchGLU: Module {
     public func callAsFunction(_ x: MLXArray, _ indices: MLXArray) -> MLXArray {
         var x = MLX.expandedDimensions(x, axes: [-2, -3])
 
-        let doSort = indices.size >= 64
+        // Sort indices for the grouped (per-expert-contiguous) gather kernel.
+        // Threshold lowered 64 -> 16 so the small-multi-token speculative-verify
+        // regime (seq 2-7, idx 16-56) uses the fast sorted path instead of the
+        // slow unsorted gatherQuantizedMM. seq=1 decode (idx=8) stays unsorted.
+        let doSort = indices.size >= 16
 
         var idx = indices
         var inverseOrder = MLXArray()
