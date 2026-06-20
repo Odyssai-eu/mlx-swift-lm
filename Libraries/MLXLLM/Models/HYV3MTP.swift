@@ -18,10 +18,6 @@ import MLX
 import MLXLMCommon
 import MLXNN
 
-// One-shot per-layer profiling of the verify forward (set HYV3_PROFILE=1 to arm).
-// Single inference thread → no real race; unsafe global keeps it cheap.
-nonisolated(unsafe) private var _hyv3Profiled = false
-
 extension HYV3ModelInner {
     /// embed + all decoder layers, returning the last-layer hidden BEFORE the
     /// final `norm` — the state the MTP head consumes. (`callAsFunction` is
@@ -30,37 +26,6 @@ extension HYV3ModelInner {
     func hiddenPreNorm(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
         var h = embedTokens(inputs)
         let mask = createAttentionMask(h: h, cache: cache?.first)
-
-        // PROFILE (one-shot): on the first verify-sized call (<=4 tokens), time
-        // each layer with a forced eval to see where the per-forward cost lives.
-        if !_hyv3Profiled, inputs.dim(1) <= 4 {
-            _hyv3Profiled = true
-            var rows = ["layer,build_ms,compute_ms"]
-            eval(h)
-            let t00 = Date()
-            var buildTotal = 0.0
-            var computeTotal = 0.0
-            for (i, layer) in layers.enumerated() {
-                let t0 = Date()
-                h = layer(h, mask: mask, cache: cache?[i])   // CPU graph build (lazy)
-                let tb = Date()
-                eval(h)                                       // GPU compute + sync
-                let te = Date()
-                let buildMs = tb.timeIntervalSince(t0) * 1000
-                let computeMs = te.timeIntervalSince(tb) * 1000
-                buildTotal += buildMs
-                computeTotal += computeMs
-                rows.append("\(i),\(String(format: "%.2f", buildMs)),\(String(format: "%.2f", computeMs))")
-            }
-            rows.append("BUILD_TOTAL,\(String(format: "%.1f", buildTotal)),0")
-            rows.append("COMPUTE_TOTAL,0,\(String(format: "%.1f", computeTotal))")
-            rows.append("WALL,\(String(format: "%.3f", Date().timeIntervalSince(t00))),0")
-            rows.append("seqLen,\(inputs.dim(1)),0")
-            try? rows.joined(separator: "\n")
-                .write(toFile: "/tmp/hy3-layer-profile.csv", atomically: true, encoding: .utf8)
-            return h
-        }
-
         for (i, layer) in layers.enumerated() {
             h = layer(h, mask: mask, cache: cache?[i])
         }

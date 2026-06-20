@@ -175,6 +175,9 @@ class HYV3Router: Module {
     }
 }
 
+// One-shot sub-op profiling of the MoE block on the first multi-token call.
+nonisolated(unsafe) private var _hyv3MoEProfiled = false
+
 // MARK: - MoE block
 
 class HYV3MoE: Module, UnaryLayer {
@@ -195,6 +198,24 @@ class HYV3MoE: Module, UnaryLayer {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
+        // PROFILE (one-shot): first multi-token MoE call — time each sub-op.
+        if !_hyv3MoEProfiled, x.dim(1) >= 2, x.dim(1) <= 4 {
+            _hyv3MoEProfiled = true
+            func ms(_ t: Date) -> String { String(format: "%.2f", Date().timeIntervalSince(t) * 1000) }
+            var rows = ["op,ms", "seqLen,\(x.dim(1))"]
+            var t = Date()
+            let (inds, weights) = router(x); eval(inds, weights)
+            rows.append("router,\(ms(t))"); t = Date()
+            var y = switchMLP(x, inds); eval(y)
+            rows.append("switchMLP,\(ms(t))"); t = Date()
+            y = (y * weights[.ellipsis, .newAxis]).sum(axis: -2).asType(y.dtype); eval(y)
+            rows.append("combine,\(ms(t))"); t = Date()
+            let sh = sharedMLP(x); eval(sh)
+            rows.append("sharedMLP,\(ms(t))")
+            try? rows.joined(separator: "\n")
+                .write(toFile: "/tmp/hy3-moe-profile.csv", atomically: true, encoding: .utf8)
+            return y + sh
+        }
         let (inds, weights) = router(x)
         var y = switchMLP(x, inds)
         // weights are f32 (carry routed_scaling_factor); promote, sum, cast back.
