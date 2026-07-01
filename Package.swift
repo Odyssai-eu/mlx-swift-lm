@@ -57,6 +57,9 @@ let package = Package(
             name: "MLXVLM",
             dependencies: [
                 "MLXLMCommon",
+                // MiniMaxM3VL reuses the MiniMaxM3 text trunk from MLXLLM.
+                // Acyclic: MLXLLM never imports MLXVLM.
+                "MLXLLM",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXOptimizers", package: "mlx-swift"),

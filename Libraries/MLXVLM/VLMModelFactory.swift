@@ -98,6 +98,7 @@ public enum VLMTypeRegistry {
         "lfm2_vl": create(LFM2VLConfiguration.self, LFM2VL.init),
         "lfm2-vl": create(LFM2VLConfiguration.self, LFM2VL.init),
         "glm_ocr": create(GlmOcrConfiguration.self, GlmOcr.init),
+        "minimax_m3_vl": create(MiniMaxM3VLConfiguration.self, MiniMaxM3VL.init),
     ])
 }
 
@@ -131,6 +132,8 @@ public enum VLMProcessorTypeRegistry {
             LFM2VLProcessorConfiguration.self, LFM2VLProcessor.init),
         "Glm46VProcessor": create(
             GlmOcrProcessorConfiguration.self, GlmOcrProcessor.init),
+        "MiniMaxM3VLProcessor": create(
+            MiniMaxM3VLProcessorConfiguration.self, MiniMaxM3VLProcessor.init),
     ])
 }
 
@@ -432,6 +435,16 @@ private struct ProcessorConfigError: Error {
     let underlying: Error
 }
 
+/// Lenient decode of just the `processor_class` field, used to fall back to
+/// the sibling config file when the preferred one does not carry it.
+private struct ProcessorClassProbe: Codable {
+    let processorClass: String?
+
+    enum CodingKeys: String, CodingKey {
+        case processorClass = "processor_class"
+    }
+}
+
 /// Loads processor configuration, preferring preprocessor_config.json over processor_config.json.
 /// Marked async to enable parallel scheduling via async let, though the underlying I/O is synchronous.
 /// Throws ProcessorConfigError wrapping any underlying error with the filename.
@@ -446,6 +459,26 @@ private func loadProcessorConfig(from modelDirectory: URL) async throws -> (
         : processorConfigURL
     do {
         let data = try Data(contentsOf: url)
+        let probe = try JSONDecoder.json5().decode(ProcessorClassProbe.self, from: data)
+        if let processorClass = probe.processorClass {
+            return (data, BaseProcessorConfiguration(processorClass: processorClass))
+        }
+
+        // Some checkpoints (e.g. minimax_m3_vl) carry `processor_class` only in
+        // processor_config.json while the numeric parameters live in
+        // preprocessor_config.json — resolve the class from the sibling file
+        // but keep the preferred file's data for the processor configuration.
+        if url != processorConfigURL,
+            FileManager.default.fileExists(atPath: processorConfigURL.path),
+            let siblingData = try? Data(contentsOf: processorConfigURL),
+            let sibling = try? JSONDecoder.json5().decode(
+                ProcessorClassProbe.self, from: siblingData),
+            let processorClass = sibling.processorClass
+        {
+            return (data, BaseProcessorConfiguration(processorClass: processorClass))
+        }
+
+        // no processor_class anywhere: preserve the original strict-decode error
         let config = try JSONDecoder.json5().decode(BaseProcessorConfiguration.self, from: data)
         return (data, config)
     } catch {

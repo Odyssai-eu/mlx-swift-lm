@@ -249,7 +249,7 @@ class MiniMaxM3DecoderLayer: Module {
 public class MiniMaxM3ModelInner: Module {
     let args: MiniMaxM3Configuration
 
-    @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
+    @ModuleInfo(key: "embed_tokens") public var embedTokens: Embedding
     fileprivate let layers: [MiniMaxM3DecoderLayer]
     @ModuleInfo(key: "norm") var norm: MiniMaxM3RMSNorm
 
@@ -267,8 +267,18 @@ public class MiniMaxM3ModelInner: Module {
         super.init()
     }
 
-    func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        var h = embedTokens(inputs)
+    public func callAsFunction(
+        _ inputs: MLXArray?, cache: [KVCache]?, inputEmbedding: MLXArray? = nil
+    ) -> MLXArray {
+        var h: MLXArray
+        if let inputEmbedding {
+            h = inputEmbedding
+        } else if let inputs {
+            h = embedTokens(inputs)
+        } else {
+            fatalError("one of inputs or inputEmbedding must be non-nil")
+        }
+
         let mask = createAttentionMask(h: h, cache: cache?.first)
 
         for (i, layer) in layers.enumerated() {
@@ -305,6 +315,18 @@ public class MiniMaxM3Model: Module, LLMModel, KVCacheDimensionProvider {
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
         let out = model(inputs, cache: cache)
+        if let lmHead {
+            return lmHead(out)
+        }
+        return model.embedTokens.asLinear(out)
+    }
+
+    /// Embedding-injection variant used by the MiniMax-M3-VL wrapper: the vision
+    /// path splices image features into the token embeddings and feeds them here.
+    public func callAsFunction(
+        _ inputs: MLXArray?, cache: [KVCache]?, inputEmbedding: MLXArray?
+    ) -> MLXArray {
+        let out = model(inputs, cache: cache, inputEmbedding: inputEmbedding)
         if let lmHead {
             return lmHead(out)
         }
@@ -449,19 +471,24 @@ public struct MiniMaxM3Configuration: Codable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
-        self.modelType = try container.decodeIfPresent(String.self, forKey: .modelType)
+        self.modelType =
+            try container.decodeIfPresent(String.self, forKey: .modelType)
             ?? "minimax_m3"
-        self.vocabularySize = try container.decodeIfPresent(Int.self, forKey: .vocabularySize)
+        self.vocabularySize =
+            try container.decodeIfPresent(Int.self, forKey: .vocabularySize)
             ?? 200064
         self.hiddenSize = try container.decodeIfPresent(Int.self, forKey: .hiddenSize) ?? 6144
         self.hiddenLayers = try container.decodeIfPresent(Int.self, forKey: .hiddenLayers) ?? 60
-        self.attentionHeads = try container.decodeIfPresent(Int.self, forKey: .attentionHeads)
+        self.attentionHeads =
+            try container.decodeIfPresent(Int.self, forKey: .attentionHeads)
             ?? 64
         self.kvHeads = try container.decodeIfPresent(Int.self, forKey: .kvHeads) ?? 4
         self.headDim = try container.decodeIfPresent(Int.self, forKey: .headDim) ?? 128
-        self.rmsNormEps = try container.decodeIfPresent(Float.self, forKey: .rmsNormEps)
+        self.rmsNormEps =
+            try container.decodeIfPresent(Float.self, forKey: .rmsNormEps)
             ?? 1e-6
-        self.ropeTheta = try container.decodeIfPresent(Float.self, forKey: .ropeTheta)
+        self.ropeTheta =
+            try container.decodeIfPresent(Float.self, forKey: .ropeTheta)
             ?? 5_000_000
         self.partialRotaryFactor =
             try container.decodeIfPresent(Float.self, forKey: .partialRotaryFactor) ?? 0.5
@@ -482,9 +509,11 @@ public struct MiniMaxM3Configuration: Codable, Sendable {
             try container.decodeIfPresent(Int.self, forKey: .numExpertsPerTok) ?? 4
         self.routedScalingFactor =
             try container.decodeIfPresent(Float.self, forKey: .routedScalingFactor) ?? 2.0
-        self.swigluAlpha = try container.decodeIfPresent(Float.self, forKey: .swigluAlpha)
+        self.swigluAlpha =
+            try container.decodeIfPresent(Float.self, forKey: .swigluAlpha)
             ?? 1.702
-        self.swigluLimit = try container.decodeIfPresent(Float.self, forKey: .swigluLimit)
+        self.swigluLimit =
+            try container.decodeIfPresent(Float.self, forKey: .swigluLimit)
             ?? 7.0
         self.tieWordEmbeddings =
             try container.decodeIfPresent(Bool.self, forKey: .tieWordEmbeddings) ?? false
