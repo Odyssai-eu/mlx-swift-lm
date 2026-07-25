@@ -37,6 +37,7 @@ public enum LLMTypeRegistry {
         "qwen2": create(Qwen2Configuration.self, Qwen2Model.init),
         "qwen3": create(Qwen3Configuration.self, Qwen3Model.init),
         "qwen3_moe": create(Qwen3MoEConfiguration.self, Qwen3MoEModel.init),
+        "laguna": create(LagunaConfiguration.self, LagunaModel.init),
         "qwen3_next": create(Qwen3NextConfiguration.self, Qwen3NextModel.init),
         "qwen3_5": create(Qwen35Configuration.self, Qwen35Model.init),
         "qwen3_5_moe": create(Qwen35Configuration.self, Qwen35MoEModel.init),
