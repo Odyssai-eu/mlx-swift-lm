@@ -26,6 +26,10 @@ public actor ModelTypeRegistry<T> {
     /// Given a `modelType` and configuration data instantiate a new `LanguageModel`.
     public func createModel(configuration: Data, modelType: String) throws -> sending T {
         guard let creator = creators[modelType] else {
+            let hasKimi = creators["kimi_linear"] != nil
+            let n = creators.count
+            let sample = creators.keys.sorted().joined(separator: ",")
+            FileHandle.standardError.write(Data("[KIMI_DEBUG] miss=\(modelType) hasKimi=\(hasKimi) count=\(n) keys=\(sample)\n".utf8))
             throw ModelFactoryError.unsupportedModelType(modelType)
         }
         return try creator(configuration)
