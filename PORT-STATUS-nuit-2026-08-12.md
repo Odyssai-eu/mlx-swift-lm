@@ -175,3 +175,24 @@ fork and bump `Package.resolved` to the fork HEAD (8bbb748) so the github pin
 carries the registration. Telemak also needs kimi_linear added to the explicit
 LLM route in `ModelLoader.dispatchedLoad` (line ~152, next to step3p7) so it
 doesn't fall through the generic VLM-capable dispatcher. Model IS on .29 for E2E.
+
+## kimi_linear — ALL build causes exhaustively ruled out (go straight to introspection)
+
+Do NOT repeat build cycles. Verified over ~6 rebuilds that the registration is
+correct and compiled, yet `creators["kimi_linear"] == nil` at runtime while
+`mimo_v2` (same dict, same file) works:
+- resolution: forced local-path, `LLMModelFactory.swift` in the resolved source
+  has `kimi_linear` (=1), workspace-state shows `mlx-swift-lm @ local`. Clean.
+- fetch cache: irrelevant with local path (github branch cache was stale at
+  a7636b5 — that was a red herring for the URL-pin path).
+- compiled-object cache: purged `.xcbuild/Build/Intermediates.noindex` (full
+  recompile) — SAME result.
+- incremental, config-decode masking (throws configurationDecodingError not
+  unsupported), VLM mis-routing (explicit LLM route via ModelLoader — same),
+  Telemak whitelist (Telemak never touches the registry).
+NEXT STEP = RUNTIME INTROSPECTION ONLY: add `print(LLMTypeRegistry.shared.
+creators.keys.sorted())` (or dump on the unsupported throw in
+`ModelTypeRegistry.createModel`), rebuild once, load kimi, read the log. That
+answers whether the static dict literal actually contains kimi_linear at runtime
+(suspect: a Swift issue with the large dict literal + the new generic type, or a
+duplicate registry symbol). Everything else is proven fine.
