@@ -252,3 +252,30 @@ print to `ModelTypeRegistry.createModel` (dump `creators.keys`), do ONE cold
 build, load kimi, read the log. That single experiment tells you build-vs-runtime
 for certain. Everything else is speculation until then. Do not commit the
 overclaimed theories above as fact.
+
+## PROVEN root cause (not a theory) + the ONE untried fix
+
+PROVEN by direct check: the source file (via the local-path symlink xcodebuild
+uses) contains `KIMI_DEBUG` (grep=1), but the deployed binary does NOT
+(strings grep=0) — after `rm -rf .xcbuild` + a full cold build. Conclusion:
+**xcodebuild + a path-dependency (symlink) fork does NOT recompile EDITED
+existing files — it reuses a stale compiled module.** NEW files DO compile in
+(KimiLinearModel symbols are in the binary). This is why every edit to
+LLMModelFactory.swift (kimi registration) / MiMoV2Flash.swift (mimo fixes) /
+ModelTypeRegistry.swift (this debug) never reached the binary. The code is fine;
+the path-dep build never picked up the edits.
+
+THE UNTRIED FIX (do this first, fresh session): abandon the local-path override.
+Use the GITHUB PIN and force a fresh fetch of the pushed HEAD:
+```
+rm -rf ~/Library/Caches/org.swift.swiftpm ~/Library/Developer/Xcode/DerivedData/telemak-* \
+       ~/Claude/code/telemak/.xcbuild ~/Claude/code/telemak/.build ~/Claude/code/telemak/Package.resolved
+# Package.swift = .package(url: ".../mlx-swift-lm", branch: "feat/model-gap")  (already committed state)
+cd ~/Claude/code/telemak && ./scripts/build.sh Release
+```
+The github branch HEAD carries EVERYTHING committed tonight (kimi_linear
+registration, the debug print, mimo alias). A fresh github checkout compiles the
+real HEAD (not a cached path-dep module). Verify: `strings binary | grep KIMI_DEBUG`
+should be >0. Then load kimi (debug dumps creators.keys → confirms registration)
+and mimo. This one change likely unblocks BOTH kimi_linear and mimo-2.5, since
+their code is correct and was only ever blocked by the path-dep stale module.
