@@ -34,14 +34,52 @@ feature parity; fix the Qwen3.6 thinking-loop.
 
 ## Blocked / scoped follow-ups
 
-- **mimo-2.5 weight fix**: MiMo-V2.5 genuinely differs from the flash variant.
-  Config has `add_swa_attention_sink_bias:True`, `add_full_attention_sink_bias:False`
-  → SWA layers carry `attention_sink_bias`, full-attn layers do NOT. Layer 0 of the
-  8bit checkpoint has NO sink bias, but `MiMoV2FlashAttention` sets `hasSinks` such
-  that it requires the weight → `keyNotFound`. Fix = make the per-layer sink
-  determination match the checkpoint's SWA/full pattern (or tolerate an absent
-  `attention_sink_bias` by keeping the default). Not a clean alias — needs the
-  MiMoV2Flash model generalised.
+- **mimo-2.5 weight load** — alias resolves the type (no more
+  `unsupportedModelType`), but the 8bit checkpoint fails to load with
+  `keyNotFound model.layers.0.self_attn.attention_sink_bias`. Root: full-attn
+  layers (`hybrid_layer_pattern==0`, `add_full_attention_sink_bias:false`) carry
+  NO sink weight, but `MiMoV2FlashAttention` declares the `@ParameterInfo`
+  unconditionally. **Two fixes attempted and REVERTED (both failed → dead horse,
+  stopped per no-rustine rule):** (1) `updateMissing` `hasSinks`→`!hasSinks` — no
+  effect, so `updateMissing` is NOT the throwing site; (2) sanitize-inject a
+  default `ones` sink for full layers — also no effect, so the injected weight
+  doesn't reach the strict verify OR sanitize isn't on this load path. **Root not
+  understood**: the keyNotFound is thrown by some quantized-load/verify path that
+  bypasses both hooks — needs tracing `ModelLoader`/`ModelContainer`'s weight
+  application for 8bit models before touching MiMoV2Flash again. Not a clean
+  alias; genuine arch difference (SWA/sink per layer).
+
+- **kimi_linear port** — TURN-KEY SPEC (all crux risks retired; needs a node
+  with the model for E2E). Every component is mapped to an existing fork template
+  and the `gatedDeltaUpdate` ABI is CONFIRMED matching. Deliberately NOT written
+  blind tonight: the sanitize's kv_b_proj→embed_q/unembed_out MLA-absorb split is
+  numerically subtle and unvalidatable on .29 (no shards) — writing 600 lines that
+  "compile but may be wrong" is the failure mode to avoid. Mechanical to implement
+  with the map below:
+  - `ModelArgs`: fields per Python (linear_attn_config dict → decode
+    full_attn_layers/kda_layers/num_heads/head_dim/short_conv_kernel_size;
+    num_experts, kv_lora_rank, qk_nope/qk_rope/v_head_dim, num_expert_group,
+    topk_group, moe_router_activation_func sigmoid, moe_renormalize,
+    routed_scaling_factor, first_k_dense_replace, moe_layer_freq).
+  - `KimiMLAAttention` → copy `GLM4MoELiteAttention` (identical: kv_a_proj_with_mqa,
+    kv_a_layernorm, embed_q/unembed_out `MultiLinear`, L==1 absorb branch).
+  - `KimiDeltaAttention` → q/k/v Linear + 3× depthwise `Conv1d` (kernel 4, groups=dim,
+    like Qwen3Next's conv), f_a/f_b (a_logits), b_proj (b_logits), g_a/g_b (gate),
+    `A_log` param (H,1), `dt_bias` param (projDim), then
+    `gatedDeltaUpdate(q,k,v, a:a_logits, b:b_logits, aLog:A_log, dtBias:dt_bias,
+    state:ssm, mask:)` (ABI matches EXACTLY), then o_norm(RMSNorm head_dim) *
+    sigmoid(gate), o_proj. q/k pre-scaled: q=(scale²)·rmsnorm(q), k=scale·rmsnorm(k).
+  - `KimiSparseMoE` → `SwitchGLU` + `_group_expert_select` (sigmoid, e_score bias,
+    n_group/topk_group) + optional shared_experts — same as g9v3/GLM4MOE grouped.
+  - `KimiDecoderLayer`: `is_linear = (idx+1) ∈ kda_layers` → KDA else MLA; MoE when
+    `num_experts>0 && idx≥first_k_dense_replace && idx%moe_layer_freq==0`.
+  - Cache: KDA → `ArraysCache(size:4)` (q/k/v conv states + ssm); MLA → `KVCache`.
+    (Both already in `KVCache.swift`.) Masks: ssm mask for KDA layers, attention
+    mask for MLA layers (Qwen3NextModelInner shows the two-mask pattern).
+  - `sanitize` (Python lines 492-611): block_sparse_moe→mlp rename + expert-stack
+    into switch_mlp; conv1d weight moveaxis(2→1) → `{q,k,v}_conv.conv.weight`;
+    dt_bias flatten; **kv_b_proj split into embed_q/unembed_out** per qk_nope/v_head
+    (this is the one numerically-sensitive step — validate against a real load).
 
 - **kimi_linear port** (composable, low-risk — all blocks exist in the fork):
   - Reference: stock `mlx_lm/models/kimi_linear.py` (611 lines) — pulled to
