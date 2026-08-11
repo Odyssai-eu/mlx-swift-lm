@@ -540,6 +540,9 @@ public struct TokenIterator: TokenIteratorProtocol {
     // Internal metrics
     public var promptPrefillTime: TimeInterval = 0.0
 
+    // Runtime degenerate-loop guard (parity with the Python engine anti-loop).
+    var loopGuard = LoopGuard()
+
     /// Initialize a `TokenIterator` with the given tokens. Note: this has been
     /// replaced with ``init(input:model:cache:parameters:)``.
     ///
@@ -701,7 +704,13 @@ public struct TokenIterator: TokenIteratorProtocol {
 
         tokenCount += 1
 
-        return previousY.tokens.item(Int.self)
+        let out = previousY.tokens.item(Int.self)
+        // Hard-stop a degenerate runaway loop (thinking repeats, etc.) the same
+        // way maxTokens ends generation — return nil so the stream closes.
+        if loopGuard.ingest(out) {
+            return nil
+        }
+        return out
     }
 }
 

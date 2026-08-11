@@ -53,6 +53,9 @@ public enum LLMTypeRegistry {
             GraniteMoeHybridConfiguration.self, GraniteMoeHybridModel.init),
         "mimo": create(MiMoConfiguration.self, MiMoModel.init),
         "mimo_v2_flash": create(MiMoV2FlashConfiguration.self, MiMoV2FlashModel.init),
+        // MiMo-V2.5 ships model_type "mimo_v2" — same arch as the flash impl
+        // (mirrors the Python mimo_v2 -> mimo_v2_flash remap).
+        "mimo_v2": create(MiMoV2FlashConfiguration.self, MiMoV2FlashModel.init),
         "minimax": create(MiniMaxConfiguration.self, MiniMaxModel.init),
         "minimax_m3": create(MiniMaxM3Configuration.self, MiniMaxM3Model.init),
         "glm4": create(GLM4Configuration.self, GLM4Model.init),
