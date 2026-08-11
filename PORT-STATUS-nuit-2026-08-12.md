@@ -231,3 +231,24 @@ Then deploy + load kimi_linear AND mimo-2.5 on .29 — both are expected to work
 once their edits actually compile in. If kimi loads, run a coherence gen; if mimo
 loads, the sink fix (in git history / re-apply the `!hasSinks` or sanitize-inject)
 is validated. This single cache-nuke likely closes kimi_linear AND mimo-2.5.
+
+## CORRECTION — the "build cache" master theory is ALSO disproven
+
+After nuking EVERYTHING (`~/Library/Developer/Xcode/DerivedData/telemak-*`,
+`~/Library/Caches/org.swift.swiftpm`, `.xcbuild`, `.build`) and a full COLD
+build, kimi_linear STILL fails `unsupportedModelType`. So it is NOT a build
+cache. I retract the confident theory above (I concluded too fast, repeatedly).
+
+HONEST STATE — only these are proven:
+- kimi_linear code compiles; registration line is in the fork source; new-file
+  symbols (KimiLinearModel) are in the binary.
+- `creators["kimi_linear"] == nil` at runtime; `creators["mimo_v2"]` works.
+- In one build, a debug print at the throw site did NOT fire — BUT that
+  instrumentation was reverted before the cold build, so it is UNVERIFIED whether
+  the edit reaches the cold-built binary.
+
+THE ONE definitive next step (do this FIRST, fresh session): re-add the debug
+print to `ModelTypeRegistry.createModel` (dump `creators.keys`), do ONE cold
+build, load kimi, read the log. That single experiment tells you build-vs-runtime
+for certain. Everything else is speculation until then. Do not commit the
+overclaimed theories above as fact.
