@@ -49,7 +49,27 @@ feature parity; fix the Qwen3.6 thinking-loop.
   application for 8bit models before touching MiMoV2Flash again. Not a clean
   alias; genuine arch difference (SWA/sink per layer).
 
-- **kimi_linear port** — TURN-KEY SPEC (all crux risks retired; needs a node
+- **kimi_linear — WRITTEN + COMPILES + COMMITTED, but a runtime-registration
+  mystery blocks the load.** `Libraries/MLXLLM/Models/KimiLinear.swift` (full
+  hybrid MLA[GLM4MoELite absorb]+KDA[gatedDeltaUpdate]+grouped-MoE, sanitize with
+  kv_b_proj split / conv remap / expert-stack). Compiles Debug+Release. Registered
+  in `LLMTypeRegistry.shared` creators (line 65, byte-identical placement to the
+  working `hy_v3`/`mimo_v2` entries; the key string is present in the deployed
+  binary exactly like theirs). BUT `admin/load` fails with
+  `unsupportedModelType("kimi_linear")` = `ModelTypeRegistry.createModel` finds
+  `creators["kimi_linear"] == nil` at runtime. RULED OUT: stale build (binary has
+  the string + anti-loop; xcodebuild resolves the local-path fork), incremental
+  cache (forced recompile, same result), config-decode masking (that path throws
+  `configurationDecodingError`, not unsupported), Telemak-side whitelist (Telemak
+  doesn't touch the registry). The entry is compiled in yet absent from the live
+  dict — needs RUNTIME INTROSPECTION (dump `LLMTypeRegistry.shared.creators.keys`
+  via a debug print + rebuild) to see whether the static dict literal is being
+  truncated/partially-initialised. Stopped here (3 build cycles, dead horse) — a
+  fresh-session debug task, not more blind rebuilds. Model IS on .29 for E2E once
+  the registration resolves.
+
+- **kimi_linear port** — component map (implemented in KimiLinear.swift; keep for
+  reference / debugging):
   with the model for E2E). Every component is mapped to an existing fork template
   and the `gatedDeltaUpdate` ABI is CONFIRMED matching. Deliberately NOT written
   blind tonight: the sanitize's kv_b_proj→embed_q/unembed_out MLA-absorb split is
