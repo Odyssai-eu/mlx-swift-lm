@@ -196,3 +196,38 @@ creators.keys.sorted())` (or dump on the unsupported throw in
 answers whether the static dict literal actually contains kimi_linear at runtime
 (suspect: a Swift issue with the large dict literal + the new generic type, or a
 duplicate registry symbol). Everything else is proven fine.
+
+## MASTER ROOT CAUSE (proven) — build cache freezes EDITS to existing fork files
+
+DEFINITIVE, proven by instrumentation: a `print` added to
+`ModelTypeRegistry.createModel` (the ONLY `unsupportedModelType` throw site)
+NEVER fired at runtime, even after `rm -rf telemak/.xcbuild` (full nuke) + a
+from-scratch build. So **edits to EXISTING fork files
+(LLMModelFactory.swift, ModelTypeRegistry.swift, MiMoV2Flash.swift, Evaluate.swift)
+do NOT reach the compiled binary** — only NEW files do (KimiLinear.swift,
+LoopGuard.swift compiled in; their symbols are in the binary). A deeper cache
+survives the `.xcbuild` delete — suspect `~/Library/Developer/Xcode/DerivedData/
+telemak-*` (found pinned at fork revision 47b075d) and/or
+`~/Library/Caches/org.swift.swiftpm`.
+
+**This explains the ENTIRE session's "failures":**
+- kimi_linear: registration is an EDIT to LLMModelFactory.swift → never compiled
+  in → `creators["kimi_linear"]==nil`. THE CODE IS FINE.
+- mimo-2.5: both weight fixes were EDITS to MiMoV2Flash.swift → likely never
+  compiled in either → "2 fixes failed" was WRONG; they were never actually
+  tested. (mimo_v2 alias "works" only because it was compiled in an early build
+  before the cache froze.)
+- Only LoopGuard (NEW file) genuinely reached the binary → validated.
+
+**FIX (fresh session, one shot):**
+```
+rm -rf ~/Library/Developer/Xcode/DerivedData/telemak-* \
+       ~/Library/Caches/org.swift.swiftpm \
+       ~/Claude/code/telemak/.xcbuild ~/Claude/code/telemak/.build
+cd ~/Claude/code/telemak   # Package.swift on local-path to the fork
+./scripts/build.sh Release   # cold build → picks up ALL fork edits
+```
+Then deploy + load kimi_linear AND mimo-2.5 on .29 — both are expected to work
+once their edits actually compile in. If kimi loads, run a coherence gen; if mimo
+loads, the sink fix (in git history / re-apply the `!hasSinks` or sanitize-inject)
+is validated. This single cache-nuke likely closes kimi_linear AND mimo-2.5.
