@@ -156,3 +156,22 @@ feature parity; fix the Qwen3.6 thinking-loop.
   Qwen3.6-35B and kimi-linear (config present, weights absent) — a real blocker
   for E2E testing there. `odyssai/...` ids (not on HF) fall through to the
   odysseus dir.
+
+## kimi_linear runtime blocker — ROOT CAUSE FOUND (next-session fix)
+
+The registration is nil at runtime because **xcodebuild compiled
+`LLMModelFactory.swift` from a STALE resolution**:
+`telemak/.xcbuild/SourcePackages/checkouts/mlx-swift-lm` was pinned at the
+ORIGINAL fork revision **a7636b5** (no LoopGuard, no mimo alias, no kimi_linear)
+even though `Package.swift` points at the local-path symlink. So KimiLinear.swift
+(a new file) got picked up but the EDITED LLMModelFactory.swift (registration on
+line 65) was shadowed by the stale a7636b5 copy → `creators["kimi_linear"] == nil`.
+
+FIX (fresh session): force a fully-consistent re-resolution to the local path.
+Deleting only `.xcbuild/SourcePackages/checkouts/mlx-swift-lm` + `Package.resolved`
+re-resolved ALL deps and broke other versions (3 build failures) — so instead:
+`swift package reset` / delete the whole `.xcbuild` and rebuild once, OR push the
+fork and bump `Package.resolved` to the fork HEAD (8bbb748) so the github pin
+carries the registration. Telemak also needs kimi_linear added to the explicit
+LLM route in `ModelLoader.dispatchedLoad` (line ~152, next to step3p7) so it
+doesn't fall through the generic VLM-capable dispatcher. Model IS on .29 for E2E.
