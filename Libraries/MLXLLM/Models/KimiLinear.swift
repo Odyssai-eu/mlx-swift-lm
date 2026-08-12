@@ -412,6 +412,9 @@ public class KimiLinearModel: Module, LLMModel, KVCacheDimensionProvider {
             }
             let dtKey = "\(prefix).self_attn.dt_bias"
             if let v = w[dtKey], v.ndim > 1 { w[dtKey] = v.reshaped([-1]) }
+            // A_log ships as [1, 1, numHeads, 1]; the module holds it flat [numHeads].
+            let aLogKey = "\(prefix).self_attn.A_log"
+            if let v = w[aLogKey], v.ndim > 1 { w[aLogKey] = v.reshaped([-1]) }
 
             // MLA absorb: split kv_b_proj -> embed_q / unembed_out.
             // Mirrors GLM4MOELite.sanitize exactly: kv_b_proj is stored
