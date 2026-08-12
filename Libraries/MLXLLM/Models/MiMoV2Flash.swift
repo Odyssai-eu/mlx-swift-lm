@@ -194,8 +194,12 @@ class MiMoV2FlashAttention: Module {
         path: [String],
         modulePath: [String]
     ) throws {
-        if parameter == "attention_sink_bias", hasSinks {
-            // Keep the default you already set in init (ones([numAttentionHeads]))
+        if parameter == "attention_sink_bias", !hasSinks {
+            // This layer does not use attention sinks (full-attn layers when
+            // add_full_attention_sink_bias=false, or SWA when its flag is
+            // false), so the checkpoint omits the weight. Keep the unused
+            // init default (ones) instead of throwing keyNotFound — forward
+            // passes `hasSinks ? attentionSinkBias : nil`, so it is never read.
             return
         }
         try super.updateMissing(
