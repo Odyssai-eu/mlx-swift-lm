@@ -413,15 +413,49 @@ public class KimiLinearModel: Module, LLMModel, KVCacheDimensionProvider {
             let dtKey = "\(prefix).self_attn.dt_bias"
             if let v = w[dtKey], v.ndim > 1 { w[dtKey] = v.reshaped([-1]) }
 
-            // MLA absorb: split kv_b_proj -> embed_q / unembed_out
-            if let kvB = w.removeValue(forKey: "\(prefix).self_attn.kv_b_proj.weight") {
+            // MLA absorb: split kv_b_proj -> embed_q / unembed_out.
+            // Mirrors GLM4MOELite.sanitize exactly: kv_b_proj is stored
+            // QUANTISED (weight U32 packed [nH*(qkNope+vHead), kvLoraRank/pack],
+            // + scales/biases). It must be DEQUANTISED before the logical
+            // reshape [nH, qkNope+vHead, kvLoraRank], then re-quantised — you
+            // cannot reshape/transpose a packed quantised tensor with logical
+            // dims (the old code did, hence the 1048576 -> (32,256,512) crash).
+            let attn = "\(prefix).self_attn"
+            if var kvB = w.removeValue(forKey: "\(attn).kv_b_proj.weight") {
                 let qkNope = configuration.qkNopeHeadDim ?? configuration.headDim
                 let vHead = configuration.vHeadDim ?? configuration.headDim
                 let nH = configuration.numAttentionHeads
-                let reshaped = kvB.reshaped([nH, qkNope + vHead, configuration.kvLoraRank])
-                let parts = split(reshaped, indices: [qkNope], axis: 1)
-                w["\(prefix).self_attn.embed_q.weight"] = parts[0]
-                w["\(prefix).self_attn.unembed_out.weight"] = parts[1].swappedAxes(1, 2)
+                let headDim = qkNope + vHead
+                let isQ = w["\(attn).kv_b_proj.scales"] != nil
+                var bits = 0
+                var groupSize = 0
+                if isQ {
+                    let dims = configuration.kvLoraRank
+                    let scales = w.removeValue(forKey: "\(attn).kv_b_proj.scales")!
+                    let biases = w.removeValue(forKey: "\(attn).kv_b_proj.biases")!
+                    bits = (kvB.dim(-1) * 32) / dims
+                    groupSize = dims / scales.dim(-1)
+                    kvB = dequantized(
+                        kvB, scales: scales, biases: biases,
+                        groupSize: groupSize, bits: bits)
+                }
+                let v = kvB.reshaped(nH, headDim, -1)
+                var wk = contiguous(v[0..., ..<qkNope, 0...].swappedAxes(-1, -2))
+                var wv = contiguous(v[0..., qkNope..., 0...])
+                if isQ {
+                    let (qWk, sWk, bWk) = MLX.quantized(
+                        wk, groupSize: groupSize, bits: bits)
+                    let (qWv, sWv, bWv) = MLX.quantized(
+                        wv, groupSize: groupSize, bits: bits)
+                    w["\(attn).embed_q.scales"] = sWk
+                    w["\(attn).unembed_out.scales"] = sWv
+                    w["\(attn).embed_q.biases"] = bWk
+                    w["\(attn).unembed_out.biases"] = bWv
+                    wk = qWk
+                    wv = qWv
+                }
+                w["\(attn).embed_q.weight"] = wk
+                w["\(attn).unembed_out.weight"] = wv
             }
         }
         return w
