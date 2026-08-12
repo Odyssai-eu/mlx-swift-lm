@@ -763,6 +763,11 @@ public struct SpeculativeTokenIterator: TokenIteratorProtocol {
     private var pendingTokens = [Int]()
     private var pendingIndex = 0
 
+    // Degenerate-loop guard — the speculative path emits accepted tokens here
+    // just like TokenIterator, and must hard-stop runaway loops the same way
+    // (otherwise MTP/speculative-served models bypass the anti-loop entirely).
+    var loopGuard = LoopGuard()
+
     // Internal metrics
     public var promptPrefillTime: TimeInterval = 0.0
 
@@ -952,6 +957,7 @@ public struct SpeculativeTokenIterator: TokenIteratorProtocol {
             let token = pendingTokens[pendingIndex]
             pendingIndex += 1
             tokenCount += 1
+            if loopGuard.ingest(token) { return nil }
             return token
         }
 
@@ -967,6 +973,7 @@ public struct SpeculativeTokenIterator: TokenIteratorProtocol {
         let token = pendingTokens[pendingIndex]
         pendingIndex += 1
         tokenCount += 1
+        if loopGuard.ingest(token) { return nil }
         return token
     }
 }
